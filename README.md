@@ -8,7 +8,10 @@ Academic consultation scheduling for college thesis groups.
 
 ```
 server/                    Express API
-  server.js
+  app.js                   routes + middleware (exports the app)
+  server.js                local entrypoint (app.listen)
+api/index.js               Vercel serverless entrypoint -> server/app.js
+vercel.json                build config + /api/* rewrite
 client/                    Vite + React app
   src/components/AuthScreen.jsx
   src/components/Dashboard.jsx
@@ -17,19 +20,15 @@ client/                    Vite + React app
   src/lib/session.js       localStorage session
 supabase/migrations/
   0001_init.sql            schema, RLS, auth trigger
+  0002_restrict_function_grants.sql
 ```
 
 ## 1. Database
 
-The Supabase project `ConsultTrack` (`xruquzbkwuuziujuivrg`) is currently **empty** —
-apply the migration before running anything:
-
-```sql
--- Supabase Dashboard -> SQL Editor -> paste supabase/migrations/0001_init.sql -> Run
-```
-
-It creates `profiles`, `consultations`, and `action_items`, enables RLS, and adds a
+**Already applied** to Supabase project `ConsultTrack` (`xruquzbkwuuziujuivrg`).
+`profiles`, `consultations`, and `action_items` exist with RLS enabled, plus a
 trigger that creates a profile row whenever a user signs up through Supabase Auth.
+The migration files are kept for reproducibility.
 
 **One addition to the spec:** `profiles.group_name`. Without it there is no way to
 tell which consultations a given student is allowed to see — `consultations` only
@@ -40,6 +39,8 @@ student after they first sign in:
 update public.profiles set group_name = 'Group 7 - BSIT', role = 'student'
  where email = 'juan.delacruz@gmail.com';
 ```
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for the full Gmail SMTP and Vercel walkthroughs.
 
 ## 2. Supabase Auth settings
 
