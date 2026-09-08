@@ -9,10 +9,17 @@
  */
 
 import 'dotenv/config';
+import dns from 'node:dns';
 import express from 'express';
 import cors from 'cors';
 import pg from 'pg';
 import { createClient } from '@supabase/supabase-js';
+
+// Supabase's pooler hostnames resolve to both IPv6 and IPv4. Node 18+ returns
+// whatever DNS lists first, which is often the AAAA record -- and serverless
+// platforms frequently have no IPv6 egress, so the connection dies with
+// ENETUNREACH. Pinning IPv4 makes the choice deterministic.
+dns.setDefaultResultOrder('ipv4first');
 
 const {
   SUPABASE_URL,
@@ -326,13 +333,39 @@ app.patch(
 
 /* ------------------------------------------------------------ plumbing --- */
 
-app.get(
-  '/api/health',
-  asyncRoute(async (_req, res) => {
+/**
+ * GET /api/health
+ * Diagnostic: reports the real Postgres failure instead of the generic 500, so
+ * a misconfigured DATABASE_URL can be identified from a browser. The password is
+ * never included -- only host, port and the driver's error code.
+ */
+app.get('/api/health', async (_req, res) => {
+  let target = { host: null, port: null, user: null };
+  try {
+    const url = new URL(DATABASE_URL);
+    target = { host: url.hostname, port: url.port, user: decodeURIComponent(url.username) };
+  } catch {
+    return res.status(500).json({
+      ok: false,
+      stage: 'config',
+      message: 'DATABASE_URL is not a valid connection string.',
+    });
+  }
+
+  try {
     await pool.query('select 1');
-    res.json({ ok: true, uptime: process.uptime() });
-  }),
-);
+    res.json({ ok: true, database: target, uptime: process.uptime() });
+  } catch (err) {
+    console.error('[health] database check failed:', err);
+    res.status(500).json({
+      ok: false,
+      stage: 'database',
+      code: err.code ?? null,
+      message: err.message,
+      database: target,
+    });
+  }
+});
 
 app.use((_req, res) => res.status(404).json({ error: 'Not found.' }));
 
