@@ -71,6 +71,8 @@ class HttpError extends Error {
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const CODE_RE = /^\d{6}$/;
+// Loose on purpose - confirm HAU's real student-number format and tighten this.
+const STUDENT_ID_RE = /^[0-9-]{6,20}$/;
 
 /* --------------------------------------------------------- auth middleware */
 
@@ -84,9 +86,7 @@ async function requireAuth(req, _res, next) {
     if (error || !data?.user) throw new HttpError(401, 'Invalid or expired session.');
 
     const { rows } = await pool.query(
-      `select id, full_name, email, role, group_name
-         from public.profiles
-        where id = $1`,
+      `select ${PROFILE_COLUMNS} from public.profiles where id = $1`,
       [data.user.id],
     );
 
@@ -106,10 +106,166 @@ async function requireAuth(req, _res, next) {
 
 /* ------------------------------------------------------------ auth routes */
 
+const PROFILE_COLUMNS = `id, full_name, email, role, group_name,
+                         last_name, first_name, middle_initial,
+                         student_id, department, course, email_verified_at`;
+
+/** "Dela Cruz, Juan M." */
+function composeFullName({ lastName, firstName, middleInitial }) {
+  const initial = middleInitial ? ` ${middleInitial.toUpperCase()}.` : '';
+  return `${lastName}, ${firstName}${initial}`;
+}
+
+/**
+ * Sends the 6-digit code through the Magic Link template.
+ *
+ * Deliberately not Supabase's signup-confirmation email: this project's "Confirm
+ * signup" template does not apply, so that path delivers a link instead of a
+ * code. Requires "Confirm email" to be OFF in Supabase, which makes signUp
+ * auto-confirm the address and leaves signInWithOtp on the magiclink path.
+ */
+async function sendAccessCode(email) {
+  const { error } = await supabase.auth.signInWithOtp({
+    email,
+    options: { shouldCreateUser: false },
+  });
+  if (error) {
+    const status = error.status === 429 ? 429 : 400;
+    throw new HttpError(status, error.message || 'Could not send the access code.');
+  }
+}
+
+/**
+ * POST /api/auth/register
+ * Body: { email, password, lastName, firstName, middleInitial?, studentId, department, course }
+ * Creates the account, then emails a 6-digit code to verify the address.
+ */
+app.post(
+  '/api/auth/register',
+  asyncRoute(async (req, res) => {
+    const email = String(req.body?.email ?? '').trim().toLowerCase();
+    const password = String(req.body?.password ?? '');
+    const lastName = String(req.body?.lastName ?? '').trim();
+    const firstName = String(req.body?.firstName ?? '').trim();
+    const middleInitial = String(req.body?.middleInitial ?? '').trim().slice(0, 1);
+    const studentId = String(req.body?.studentId ?? '').trim();
+    const department = String(req.body?.department ?? '').trim();
+    const course = String(req.body?.course ?? '').trim();
+
+    if (!EMAIL_RE.test(email)) throw new HttpError(400, 'Enter a valid email address.');
+    if (password.length < 8) throw new HttpError(400, 'Password must be at least 8 characters.');
+    if (!lastName) throw new HttpError(400, 'Last name is required.');
+    if (!firstName) throw new HttpError(400, 'First name is required.');
+    if (!STUDENT_ID_RE.test(studentId)) {
+      throw new HttpError(400, 'Enter a valid student ID (6-20 digits or dashes).');
+    }
+    if (!department) throw new HttpError(400, 'Department is required.');
+    if (!course) throw new HttpError(400, 'Course is required.');
+
+    // Fail before creating the auth user, so a duplicate ID cannot orphan an account.
+    const { rows: clash } = await pool.query(
+      `select 1 from public.profiles where student_id = $1 limit 1`,
+      [studentId],
+    );
+    if (clash.length) {
+      throw new HttpError(409, 'That student ID is already registered.');
+    }
+
+    const fullName = composeFullName({ lastName, firstName, middleInitial });
+
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: {
+          role: 'student',
+          full_name: fullName,
+          last_name: lastName,
+          first_name: firstName,
+          middle_initial: middleInitial,
+          student_id: studentId,
+          department,
+          course,
+        },
+      },
+    });
+
+    if (error) {
+      const status = error.status === 429 ? 429 : 400;
+      throw new HttpError(status, error.message || 'Could not create the account.');
+    }
+    if (!data?.user) throw new HttpError(400, 'Could not create the account.');
+
+    // The trigger fills the profile from user metadata; this backfills accounts
+    // created before the columns existed and repairs any partial row.
+    await pool.query(
+      `update public.profiles
+          set full_name = $2, last_name = $3, first_name = $4, middle_initial = $5,
+              student_id = $6, department = $7, course = $8
+        where id = $1`,
+      [data.user.id, fullName, lastName, firstName, middleInitial || null,
+       studentId, department, course],
+    );
+
+    await sendAccessCode(email);
+
+    res.status(201).json({
+      ok: true,
+      needsVerification: true,
+      message: `Account created. We sent a 6-digit code to ${email}.`,
+    });
+  }),
+);
+
+/**
+ * POST /api/auth/login
+ * Body: { email, password }
+ * Unverified accounts get a fresh code instead of a session.
+ */
+app.post(
+  '/api/auth/login',
+  asyncRoute(async (req, res) => {
+    const email = String(req.body?.email ?? '').trim().toLowerCase();
+    const password = String(req.body?.password ?? '');
+
+    if (!EMAIL_RE.test(email)) throw new HttpError(400, 'Enter a valid email address.');
+    if (!password) throw new HttpError(400, 'Enter your password.');
+
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error || !data?.session) {
+      throw new HttpError(401, 'Incorrect email or password.');
+    }
+
+    const { rows } = await pool.query(
+      `select ${PROFILE_COLUMNS} from public.profiles where id = $1`,
+      [data.user.id],
+    );
+    const profile = rows[0];
+
+    if (!profile?.email_verified_at) {
+      await sendAccessCode(email);
+      return res.status(403).json({
+        ok: false,
+        needsVerification: true,
+        message: 'Verify your email first. We sent a new 6-digit code.',
+      });
+    }
+
+    res.json({
+      ok: true,
+      session: {
+        access_token: data.session.access_token,
+        refresh_token: data.session.refresh_token,
+        expires_at: data.session.expires_at,
+      },
+      profile,
+    });
+  }),
+);
+
 /**
  * POST /api/auth/send-code
- * Body: { email }
- * Emails a 6-digit access code via Supabase Auth (delivered through your Gmail SMTP).
+ * Body: { email } - resends the verification code.
  */
 app.post(
   '/api/auth/send-code',
@@ -117,16 +273,7 @@ app.post(
     const email = String(req.body?.email ?? '').trim().toLowerCase();
     if (!EMAIL_RE.test(email)) throw new HttpError(400, 'Enter a valid email address.');
 
-    const { error } = await supabase.auth.signInWithOtp({
-      email,
-      options: { shouldCreateUser: true },
-    });
-
-    if (error) {
-      const status = error.status === 429 ? 429 : 400;
-      throw new HttpError(status, error.message || 'Could not send the access code.');
-    }
-
+    await sendAccessCode(email);
     res.json({ ok: true, message: `Access code sent to ${email}.` });
   }),
 );
@@ -134,7 +281,7 @@ app.post(
 /**
  * POST /api/auth/verify-code
  * Body: { email, code }
- * Verifies the code and returns the Supabase session plus the caller's profile.
+ * Marks the address verified and returns a session.
  */
 app.post(
   '/api/auth/verify-code',
@@ -150,15 +297,14 @@ app.post(
       throw new HttpError(401, error?.message || 'That access code is invalid or has expired.');
     }
 
-    // The auth trigger normally creates the profile; upsert as a safety net so a
-    // first login never lands on a dashboard without a profile row.
     const { rows } = await pool.query(
-      `insert into public.profiles (id, email, full_name)
-            values ($1, $2, $3)
+      `insert into public.profiles (id, email, full_name, email_verified_at)
+            values ($1, $2, $3, now())
        on conflict (id) do update
               set email = excluded.email,
-                  full_name = coalesce(public.profiles.full_name, excluded.full_name)
-         returning id, full_name, email, role, group_name`,
+                  full_name = coalesce(public.profiles.full_name, excluded.full_name),
+                  email_verified_at = coalesce(public.profiles.email_verified_at, now())
+         returning ${PROFILE_COLUMNS}`,
       [data.user.id, data.user.email, data.user.user_metadata?.full_name ?? email.split('@')[0]],
     );
 
