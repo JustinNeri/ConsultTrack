@@ -106,9 +106,22 @@ async function requireAuth(req, _res, next) {
 
 /* ------------------------------------------------------------ auth routes */
 
+/*
+ * Registration is three steps, in this order:
+ *   1. POST /api/auth/start           email  -> account stub + 6-digit code
+ *   2. POST /api/auth/verify-code     code   -> session (profile still empty)
+ *   3. POST /api/auth/complete-profile details + password -> ready to sign in
+ *
+ * Verifying the address first means nobody fills a long form for an inbox they
+ * do not control.
+ */
+
 const PROFILE_COLUMNS = `id, full_name, email, role, group_name,
                          last_name, first_name, middle_initial,
-                         student_id, department, course, email_verified_at`;
+                         student_id, department, course, year_level,
+                         email_verified_at, registration_completed_at`;
+
+const YEAR_LEVELS = ['1st Year', '2nd Year', '3rd Year', '4th Year', '5th Year'];
 
 /** "Dela Cruz, Juan M." */
 function composeFullName({ lastName, firstName, middleInitial }) {
@@ -119,15 +132,14 @@ function composeFullName({ lastName, firstName, middleInitial }) {
 /**
  * Sends the 6-digit code through the Magic Link template.
  *
- * Deliberately not Supabase's signup-confirmation email: this project's "Confirm
- * signup" template does not apply, so that path delivers a link instead of a
- * code. Requires "Confirm email" to be OFF in Supabase, which makes signUp
- * auto-confirm the address and leaves signInWithOtp on the magiclink path.
+ * Requires "Confirm email" to be OFF in Supabase. With it on, a brand-new
+ * address gets the signup-confirmation template instead -- which in this project
+ * delivers a link rather than a code.
  */
-async function sendAccessCode(email) {
+async function sendAccessCode(email, { createUser }) {
   const { error } = await supabase.auth.signInWithOtp({
     email,
-    options: { shouldCreateUser: false },
+    options: { shouldCreateUser: createUser },
   });
   if (error) {
     const status = error.status === 429 ? 429 : 400;
@@ -135,137 +147,38 @@ async function sendAccessCode(email) {
   }
 }
 
-/**
- * POST /api/auth/register
- * Body: { email, password, lastName, firstName, middleInitial?, studentId, department, course }
- * Creates the account, then emails a 6-digit code to verify the address.
- */
-app.post(
-  '/api/auth/register',
-  asyncRoute(async (req, res) => {
-    const email = String(req.body?.email ?? '').trim().toLowerCase();
-    const password = String(req.body?.password ?? '');
-    const lastName = String(req.body?.lastName ?? '').trim();
-    const firstName = String(req.body?.firstName ?? '').trim();
-    const middleInitial = String(req.body?.middleInitial ?? '').trim().slice(0, 1);
-    const studentId = String(req.body?.studentId ?? '').trim();
-    const department = String(req.body?.department ?? '').trim();
-    const course = String(req.body?.course ?? '').trim();
-
-    if (!EMAIL_RE.test(email)) throw new HttpError(400, 'Enter a valid email address.');
-    if (password.length < 8) throw new HttpError(400, 'Password must be at least 8 characters.');
-    if (!lastName) throw new HttpError(400, 'Last name is required.');
-    if (!firstName) throw new HttpError(400, 'First name is required.');
-    if (!STUDENT_ID_RE.test(studentId)) {
-      throw new HttpError(400, 'Enter a valid student ID (6-20 digits or dashes).');
-    }
-    if (!department) throw new HttpError(400, 'Department is required.');
-    if (!course) throw new HttpError(400, 'Course is required.');
-
-    // Fail before creating the auth user, so a duplicate ID cannot orphan an account.
-    const { rows: clash } = await pool.query(
-      `select 1 from public.profiles where student_id = $1 limit 1`,
-      [studentId],
-    );
-    if (clash.length) {
-      throw new HttpError(409, 'That student ID is already registered.');
-    }
-
-    const fullName = composeFullName({ lastName, firstName, middleInitial });
-
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: {
-          role: 'student',
-          full_name: fullName,
-          last_name: lastName,
-          first_name: firstName,
-          middle_initial: middleInitial,
-          student_id: studentId,
-          department,
-          course,
-        },
-      },
-    });
-
-    if (error) {
-      const status = error.status === 429 ? 429 : 400;
-      throw new HttpError(status, error.message || 'Could not create the account.');
-    }
-    if (!data?.user) throw new HttpError(400, 'Could not create the account.');
-
-    // The trigger fills the profile from user metadata; this backfills accounts
-    // created before the columns existed and repairs any partial row.
-    await pool.query(
-      `update public.profiles
-          set full_name = $2, last_name = $3, first_name = $4, middle_initial = $5,
-              student_id = $6, department = $7, course = $8
-        where id = $1`,
-      [data.user.id, fullName, lastName, firstName, middleInitial || null,
-       studentId, department, course],
-    );
-
-    await sendAccessCode(email);
-
-    res.status(201).json({
-      ok: true,
-      needsVerification: true,
-      message: `Account created. We sent a 6-digit code to ${email}.`,
-    });
-  }),
-);
+/** A profile counts as registered once the details step has been submitted. */
+function isComplete(profile) {
+  return Boolean(profile?.registration_completed_at);
+}
 
 /**
- * POST /api/auth/login
- * Body: { email, password }
- * Unverified accounts get a fresh code instead of a session.
+ * POST /api/auth/start
+ * Body: { email }
+ * Step 1 of registration: creates the account stub and emails the code.
  */
 app.post(
-  '/api/auth/login',
+  '/api/auth/start',
   asyncRoute(async (req, res) => {
     const email = String(req.body?.email ?? '').trim().toLowerCase();
-    const password = String(req.body?.password ?? '');
-
     if (!EMAIL_RE.test(email)) throw new HttpError(400, 'Enter a valid email address.');
-    if (!password) throw new HttpError(400, 'Enter your password.');
-
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error || !data?.session) {
-      throw new HttpError(401, 'Incorrect email or password.');
-    }
 
     const { rows } = await pool.query(
-      `select ${PROFILE_COLUMNS} from public.profiles where id = $1`,
-      [data.user.id],
+      `select registration_completed_at from public.profiles where email = $1`,
+      [email],
     );
-    const profile = rows[0];
-
-    if (!profile?.email_verified_at) {
-      await sendAccessCode(email);
-      return res.status(403).json({
-        ok: false,
-        needsVerification: true,
-        message: 'Verify your email first. We sent a new 6-digit code.',
-      });
+    if (rows[0]?.registration_completed_at) {
+      throw new HttpError(409, 'That email is already registered. Sign in instead.');
     }
 
-    res.json({
-      ok: true,
-      session: {
-        access_token: data.session.access_token,
-        refresh_token: data.session.refresh_token,
-        expires_at: data.session.expires_at,
-      },
-      profile,
-    });
+    await sendAccessCode(email, { createUser: true });
+    res.json({ ok: true, message: `We sent a 6-digit code to ${email}.` });
   }),
 );
 
 /**
  * POST /api/auth/send-code
- * Body: { email } - resends the verification code.
+ * Body: { email } - resends the code for an in-progress registration.
  */
 app.post(
   '/api/auth/send-code',
@@ -273,7 +186,7 @@ app.post(
     const email = String(req.body?.email ?? '').trim().toLowerCase();
     if (!EMAIL_RE.test(email)) throw new HttpError(400, 'Enter a valid email address.');
 
-    await sendAccessCode(email);
+    await sendAccessCode(email, { createUser: true });
     res.json({ ok: true, message: `Access code sent to ${email}.` });
   }),
 );
@@ -281,7 +194,8 @@ app.post(
 /**
  * POST /api/auth/verify-code
  * Body: { email, code }
- * Marks the address verified and returns a session.
+ * Step 2: returns a session. `profileComplete` tells the client whether to show
+ * the details form or go straight to the dashboard.
  */
 app.post(
   '/api/auth/verify-code',
@@ -302,11 +216,146 @@ app.post(
             values ($1, $2, $3, now())
        on conflict (id) do update
               set email = excluded.email,
-                  full_name = coalesce(public.profiles.full_name, excluded.full_name),
                   email_verified_at = coalesce(public.profiles.email_verified_at, now())
          returning ${PROFILE_COLUMNS}`,
-      [data.user.id, data.user.email, data.user.user_metadata?.full_name ?? email.split('@')[0]],
+      [data.user.id, data.user.email, email.split('@')[0]],
     );
+
+    res.json({
+      ok: true,
+      profileComplete: isComplete(rows[0]),
+      session: {
+        access_token: data.session.access_token,
+        refresh_token: data.session.refresh_token,
+        expires_at: data.session.expires_at,
+      },
+      profile: rows[0],
+    });
+  }),
+);
+
+/**
+ * POST /api/auth/complete-profile
+ * Body: { lastName, firstName, middleInitial?, studentId, department, yearLevel,
+ *         course, password, refresh_token }
+ * Header: Authorization: Bearer <access_token from verify-code>
+ *
+ * Step 3: sets the password on the Supabase user and fills in the profile.
+ */
+app.post(
+  '/api/auth/complete-profile',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const password = String(req.body?.password ?? '');
+    const lastName = String(req.body?.lastName ?? '').trim();
+    const firstName = String(req.body?.firstName ?? '').trim();
+    const middleInitial = String(req.body?.middleInitial ?? '').trim().slice(0, 1);
+    const studentId = String(req.body?.studentId ?? '').trim();
+    const department = String(req.body?.department ?? '').trim();
+    const course = String(req.body?.course ?? '').trim();
+    const yearLevel = String(req.body?.yearLevel ?? '').trim();
+    const refreshToken = String(req.body?.refresh_token ?? '');
+
+    if (password.length < 8) throw new HttpError(400, 'Password must be at least 8 characters.');
+    if (!lastName) throw new HttpError(400, 'Last name is required.');
+    if (!firstName) throw new HttpError(400, 'First name is required.');
+    if (!STUDENT_ID_RE.test(studentId)) {
+      throw new HttpError(400, 'Enter a valid student ID (6-20 digits or dashes).');
+    }
+    if (!department) throw new HttpError(400, 'Department is required.');
+    if (!course) throw new HttpError(400, 'Course is required.');
+    if (!YEAR_LEVELS.includes(yearLevel)) throw new HttpError(400, 'Select your year level.');
+    if (!refreshToken) throw new HttpError(400, 'Missing session. Start the sign-up again.');
+
+    const { rows: clash } = await pool.query(
+      `select 1 from public.profiles where student_id = $1 and id <> $2 limit 1`,
+      [studentId, req.profile.id],
+    );
+    if (clash.length) throw new HttpError(409, 'That student ID is already registered.');
+
+    const fullName = composeFullName({ lastName, firstName, middleInitial });
+
+    // updateUser acts on the *caller's* session, so this needs a client carrying
+    // their tokens rather than the shared anonymous one.
+    const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    });
+
+    const { data: sessionData, error: sessionError } = await userClient.auth.setSession({
+      access_token: req.headers.authorization.slice(7).trim(),
+      refresh_token: refreshToken,
+    });
+    if (sessionError || !sessionData?.session) {
+      throw new HttpError(401, 'Your session expired. Start the sign-up again.');
+    }
+
+    const { error: updateError } = await userClient.auth.updateUser({
+      password,
+      data: {
+        role: 'student',
+        full_name: fullName,
+        last_name: lastName,
+        first_name: firstName,
+        middle_initial: middleInitial,
+        student_id: studentId,
+        department,
+        course,
+        year_level: yearLevel,
+      },
+    });
+    if (updateError) {
+      throw new HttpError(400, updateError.message || 'Could not save your password.');
+    }
+
+    const { rows } = await pool.query(
+      `update public.profiles
+          set full_name = $2, last_name = $3, first_name = $4, middle_initial = $5,
+              student_id = $6, department = $7, course = $8, year_level = $9,
+              role = coalesce(role, 'student'),
+              email_verified_at = coalesce(email_verified_at, now()),
+              registration_completed_at = now()
+        where id = $1
+    returning ${PROFILE_COLUMNS}`,
+      [req.profile.id, fullName, lastName, firstName, middleInitial || null,
+       studentId, department, course, yearLevel],
+    );
+
+    res.json({
+      ok: true,
+      session: {
+        access_token: sessionData.session.access_token,
+        refresh_token: sessionData.session.refresh_token,
+        expires_at: sessionData.session.expires_at,
+      },
+      profile: rows[0],
+    });
+  }),
+);
+
+/**
+ * POST /api/auth/login
+ * Body: { email, password }
+ */
+app.post(
+  '/api/auth/login',
+  asyncRoute(async (req, res) => {
+    const email = String(req.body?.email ?? '').trim().toLowerCase();
+    const password = String(req.body?.password ?? '');
+
+    if (!EMAIL_RE.test(email)) throw new HttpError(400, 'Enter a valid email address.');
+    if (!password) throw new HttpError(400, 'Enter your password.');
+
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error || !data?.session) throw new HttpError(401, 'Incorrect email or password.');
+
+    const { rows } = await pool.query(
+      `select ${PROFILE_COLUMNS} from public.profiles where id = $1`,
+      [data.user.id],
+    );
+
+    if (!isComplete(rows[0])) {
+      throw new HttpError(403, 'Finish creating your account first, then sign in.');
+    }
 
     res.json({
       ok: true,

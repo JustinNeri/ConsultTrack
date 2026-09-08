@@ -54,3 +54,5 @@ export const DEPARTMENTS = {
 };
 
 export const DEPARTMENT_NAMES = Object.keys(DEPARTMENTS);
+
+export const YEAR_LEVELS = ['1st Year', '2nd Year', '3rd Year', '4th Year', '5th Year'];
