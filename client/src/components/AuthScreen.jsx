@@ -44,6 +44,33 @@ const MIN_PASSWORD = 8;
  */
 const AUTH_BACKDROP = '/campus.jpg';
 
+/*
+ * The three views that stand alone on the photograph rather than inside the
+ * sign-up card: sign in, and the two halves of a password reset. They share a
+ * shape -- headline, one card, one link underneath -- so they share a table
+ * rather than three near-identical blocks of JSX.
+ */
+const SOLO = {
+  login: {
+    title: 'Welcome back',
+    subtitle: 'Sign in to book and track your consultations.',
+    label: 'Sign in',
+    busyLabel: 'Signing in...',
+  },
+  forgot: {
+    title: 'Reset your password',
+    subtitle: 'We will email you a 6-digit code to confirm the account is yours.',
+    label: 'Send reset code',
+    busyLabel: 'Sending code...',
+  },
+  reset: {
+    title: 'Choose a new password',
+    subtitle: 'Enter the code from your email, then pick the password you will use from now on.',
+    label: 'Update password',
+    busyLabel: 'Updating...',
+  },
+};
+
 /**
  * Four views:
  *   login   email + password
@@ -81,6 +108,10 @@ export default function AuthScreen({ onAuthenticated }) {
   const [notice, setNotice] = useState('');
   const [cooldown, setCooldown] = useState(0);
   const [showPassword, setShowPassword] = useState(false);
+  // The reset flow's own password pair. Kept apart from `details.password` so a
+  // half-typed sign-up and a half-typed reset can never bleed into each other.
+  const [newPassword, setNewPassword] = useState('');
+  const [newPassword2, setNewPassword2] = useState('');
 
   const inputsRef = useRef([]);
   const attemptedCodeRef = useRef('');
@@ -94,7 +125,7 @@ export default function AuthScreen({ onAuthenticated }) {
   }, [cooldown]);
 
   useEffect(() => {
-    if (view === 'verify') inputsRef.current[0]?.focus();
+    if (view === 'verify' || view === 'reset') inputsRef.current[0]?.focus();
   }, [view]);
 
   function switchView(next) {
@@ -124,6 +155,73 @@ export default function AuthScreen({ onAuthenticated }) {
       onAuthenticated({ ...result.session, profile: result.profile });
     } catch (err) {
       setError(err.message);
+    } finally {
+      setStatus('idle');
+    }
+  }
+
+  /* -------------------------------------------------- forgot password ----- */
+  async function handleForgot(event) {
+    event.preventDefault();
+    if (busy) return;
+    setError('');
+    setStatus('working');
+    try {
+      const result = await api('/auth/forgot-password', {
+        method: 'POST',
+        body: { email: email.trim().toLowerCase() },
+      });
+      setDigits(Array(CODE_LENGTH).fill(''));
+      attemptedCodeRef.current = '';
+      setNewPassword('');
+      setNewPassword2('');
+      setNotice(result.message ?? 'If that address has an account, a reset code is on its way.');
+      setCooldown(RESEND_SECONDS);
+      setView('reset');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setStatus('idle');
+    }
+  }
+
+  async function handleReset(event) {
+    event.preventDefault();
+    if (busy) return;
+    setError('');
+
+    if (code.length !== CODE_LENGTH) {
+      setError('Enter the 6-digit code from your email.');
+      return;
+    }
+    if (newPassword !== newPassword2) {
+      setError('Passwords do not match.');
+      return;
+    }
+    if (newPassword.length < MIN_PASSWORD) {
+      setError(`Password must be at least ${MIN_PASSWORD} characters.`);
+      return;
+    }
+
+    setStatus('working');
+    try {
+      await api('/auth/reset-password', {
+        method: 'POST',
+        body: { email: email.trim().toLowerCase(), code, password: newPassword },
+      });
+      // Land back on sign-in rather than straight into the app: typing the new
+      // password once is what proves it is the one they meant.
+      setPassword('');
+      setNewPassword('');
+      setNewPassword2('');
+      setDigits(Array(CODE_LENGTH).fill(''));
+      attemptedCodeRef.current = '';
+      setView('login');
+      setNotice('Password updated. Sign in with your new password.');
+    } catch (err) {
+      setError(err.message);
+      setDigits(Array(CODE_LENGTH).fill(''));
+      inputsRef.current[0]?.focus();
     } finally {
       setStatus('idle');
     }
@@ -186,15 +284,21 @@ export default function AuthScreen({ onAuthenticated }) {
   );
 
   useEffect(() => {
+    // Only the sign-up step submits itself the moment the code is complete. The
+    // reset form has a password beside the digits, so it waits to be submitted.
+    if (view !== 'verify') return;
     if (code.length === CODE_LENGTH && attemptedCodeRef.current !== code) verifyCode(code);
-  }, [code, verifyCode]);
+  }, [view, code, verifyCode]);
 
   async function resendCode() {
     if (busy || cooldown > 0) return;
     setError('');
     setStatus('working');
     try {
-      const result = await api('/auth/send-code', {
+      // Same six digits, different door: /auth/send-code only resends for a
+      // sign-up that has not finished, which is exactly what a reset is not.
+      const path = view === 'reset' ? '/auth/forgot-password' : '/auth/send-code';
+      const result = await api(path, {
         method: 'POST',
         body: { email: email.trim().toLowerCase() },
       });
@@ -305,7 +409,11 @@ export default function AuthScreen({ onAuthenticated }) {
    * fields need the room -- but stands on the same backdrop, so the two screens
    * read as one place rather than two products.
    */
-  if (view === 'login') {
+  if (SOLO[view]) {
+    const copy = SOLO[view];
+    const onSubmit =
+      view === 'login' ? handleLogin : view === 'forgot' ? handleForgot : handleReset;
+
     return (
       <AuthShell>
         <div className="animate-rise w-full max-w-[420px] [text-shadow:0_1px_14px_rgba(20,4,10,0.55)]">
@@ -320,55 +428,165 @@ export default function AuthScreen({ onAuthenticated }) {
           </div>
 
           <h1 className="mt-9 text-[38px] font-bold leading-[1.05] tracking-[-0.03em] text-white drop-shadow-[0_2px_18px_rgba(20,4,10,0.5)] sm:text-[42px]">
-            Welcome back
+            {copy.title}
           </h1>
-          <p className="mt-2.5 text-[14px] text-brand-100/85">
-            Sign in to book and track your consultations.
-          </p>
+          <p className="mt-2.5 text-[14px] text-brand-100/85">{copy.subtitle}</p>
 
           <form
-            onSubmit={handleLogin}
+            onSubmit={onSubmit}
             noValidate
-            className="mt-7 rounded-2xl bg-white p-6 shadow-[0_28px_70px_-24px_rgba(20,4,10,0.75)] sm:p-7"
+            /* text-shadow inherits: the glow is for type on the photograph, not
+               for dark text on a white card, where it only reads as blur. */
+            className="mt-7 rounded-2xl bg-white p-6 shadow-[0_28px_70px_-24px_rgba(20,4,10,0.75)] [text-shadow:none] sm:p-7"
           >
-            <Field label="Email address" htmlFor="login-email" icon={Mail}>
-              <input
-                id="login-email"
-                type="email"
-                autoComplete="email"
-                required
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                placeholder="juan.delacruz@student.hau.edu.ph"
-                className={INPUT}
-              />
-            </Field>
+            {view === 'login' ? (
+              <>
+                <Field label="Email address" htmlFor="login-email" icon={Mail}>
+                  <input
+                    id="login-email"
+                    type="email"
+                    autoComplete="email"
+                    required
+                    value={email}
+                    onChange={(event) => setEmail(event.target.value)}
+                    placeholder="juan.delacruz@student.hau.edu.ph"
+                    className={INPUT}
+                  />
+                </Field>
 
-            <Field label="Password" htmlFor="login-password" icon={Lock} className="mt-4">
-              <PasswordInput
-                id="login-password"
-                autoComplete="current-password"
-                value={password}
-                onChange={setPassword}
-                visible={showPassword}
-                onToggle={() => setShowPassword((v) => !v)}
-              />
-            </Field>
+                <Field
+                  label="Password"
+                  htmlFor="login-password"
+                  icon={Lock}
+                  className="mt-4"
+                  action={
+                    <button type="button" onClick={() => switchView('forgot')} className={LINK}>
+                      Forgot password?
+                    </button>
+                  }
+                >
+                  <PasswordInput
+                    id="login-password"
+                    autoComplete="current-password"
+                    value={password}
+                    onChange={setPassword}
+                    visible={showPassword}
+                    onToggle={() => setShowPassword((v) => !v)}
+                  />
+                </Field>
+              </>
+            ) : null}
+
+            {view === 'forgot' ? (
+              <Field label="Email address" htmlFor="forgot-email" icon={Mail}>
+                <input
+                  id="forgot-email"
+                  type="email"
+                  autoComplete="email"
+                  required
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  placeholder="juan.delacruz@student.hau.edu.ph"
+                  className={INPUT}
+                />
+                <p className="mt-2 text-xs text-ink-500">
+                  Use the HAU address you registered with. The code expires in 10 minutes.
+                </p>
+              </Field>
+            ) : null}
+
+            {view === 'reset' ? (
+              <>
+                <p className="text-[12px] font-medium text-ink-700">
+                  Reset code{' '}
+                  <span className="font-normal text-ink-500">
+                    &mdash; sent to <span className="font-semibold text-ink-800">{email}</span>
+                  </span>
+                </p>
+                <CodeInputs
+                  digits={digits}
+                  busy={busy}
+                  inputsRef={inputsRef}
+                  onChange={handleDigitChange}
+                  onKeyDown={handleDigitKeyDown}
+                  onPaste={handlePaste}
+                  label="6-digit reset code"
+                  className="mt-2.5"
+                />
+
+                <Field label="New password" htmlFor="reset-password" icon={Lock} className="mt-5">
+                  <PasswordInput
+                    id="reset-password"
+                    autoComplete="new-password"
+                    value={newPassword}
+                    onChange={setNewPassword}
+                    visible={showPassword}
+                    onToggle={() => setShowPassword((v) => !v)}
+                  />
+                  <p className="mt-1.5 text-xs text-ink-500">At least {MIN_PASSWORD} characters.</p>
+                </Field>
+
+                <Field
+                  label="Confirm new password"
+                  htmlFor="reset-confirm"
+                  icon={Lock}
+                  className="mt-4"
+                >
+                  <PasswordInput
+                    id="reset-confirm"
+                    autoComplete="new-password"
+                    value={newPassword2}
+                    onChange={setNewPassword2}
+                    visible={showPassword}
+                    onToggle={() => setShowPassword((v) => !v)}
+                  />
+                </Field>
+              </>
+            ) : null}
 
             {error ? <ErrorNote message={error} /> : null}
+            {!error && notice ? <NoticeNote message={notice} /> : null}
 
-            <SubmitButton busy={busy} label="Sign in" busyLabel="Signing in..." />
+            <SubmitButton busy={busy} label={copy.label} busyLabel={copy.busyLabel} />
+
+            {view === 'reset' ? (
+              <p className="mt-4 text-center text-sm text-ink-500">
+                Did not get it?{' '}
+                {cooldown > 0 ? (
+                  <span className="font-semibold text-ink-400">Resend in {cooldown}s</span>
+                ) : (
+                  <button type="button" onClick={resendCode} disabled={busy} className={LINK}>
+                    Resend code
+                  </button>
+                )}
+              </p>
+            ) : null}
           </form>
 
           <p className="mt-6 text-center text-[13px] text-brand-100/90">
-            First time here?{' '}
-            <button
-              type="button"
-              onClick={() => switchView('email')}
-              className="font-semibold text-white underline underline-offset-4 transition hover:text-brand-100"
-            >
-              Create an account
-            </button>
+            {view === 'login' ? (
+              <>
+                First time here?{' '}
+                <button
+                  type="button"
+                  onClick={() => switchView('email')}
+                  className="font-semibold text-white underline underline-offset-4 transition hover:text-brand-100"
+                >
+                  Create an account
+                </button>
+              </>
+            ) : (
+              <>
+                Remembered it?{' '}
+                <button
+                  type="button"
+                  onClick={() => switchView('login')}
+                  className="font-semibold text-white underline underline-offset-4 transition hover:text-brand-100"
+                >
+                  Back to sign in
+                </button>
+              </>
+            )}
           </p>
         </div>
       </AuthShell>
@@ -468,42 +686,19 @@ export default function AuthScreen({ onAuthenticated }) {
                     expires in 10 minutes.
                   </p>
 
-                  <div
-                    className="mt-7 flex justify-between gap-2 sm:gap-3"
+                  <CodeInputs
+                    digits={digits}
+                    busy={busy}
+                    inputsRef={inputsRef}
+                    onChange={handleDigitChange}
+                    onKeyDown={handleDigitKeyDown}
                     onPaste={handlePaste}
-                    role="group"
-                    aria-label="6-digit access code"
-                  >
-                    {digits.map((digit, index) => (
-                      <input
-                        key={index}
-                        ref={(element) => {
-                          inputsRef.current[index] = element;
-                        }}
-                        type="text"
-                        inputMode="numeric"
-                        autoComplete={index === 0 ? 'one-time-code' : 'off'}
-                        maxLength={1}
-                        value={digit}
-                        disabled={busy}
-                        aria-label={`Digit ${index + 1}`}
-                        onChange={(event) => handleDigitChange(index, event.target.value)}
-                        onKeyDown={(event) => handleDigitKeyDown(index, event)}
-                        onFocus={(event) => event.target.select()}
-                        className={`tnum h-14 w-full rounded-lg border text-center text-[22px] font-semibold text-ink-900 transition focus:border-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-700/15 disabled:opacity-60 ${
-                          digit ? 'border-brand-600 bg-white' : 'border-ink-200 bg-white'
-                        }`}
-                      />
-                    ))}
-                  </div>
+                    label="6-digit access code"
+                    className="mt-7"
+                  />
 
                   {error ? <ErrorNote message={error} /> : null}
-                  {!error && notice ? (
-                    <p className="mt-4 flex items-start gap-2 rounded-lg bg-emerald-50 px-3.5 py-3 text-sm font-medium text-emerald-700">
-                      <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-                      {notice}
-                    </p>
-                  ) : null}
+                  {!error && notice ? <NoticeNote message={notice} /> : null}
 
                   <button
                     type="button"
@@ -1031,20 +1226,83 @@ function BackLink({ onClick, children }) {
   );
 }
 
-function Field({ label, htmlFor, icon: Icon, optional = false, className = '', children }) {
+/*
+ * `action` puts a control on the label's own line, right-aligned -- where a
+ * "Forgot password?" belongs. Below the field it reads as a footnote to the
+ * whole form; beside the label it reads as being about this field.
+ */
+function Field({
+  label,
+  htmlFor,
+  icon: Icon,
+  optional = false,
+  action = null,
+  className = '',
+  children,
+}) {
   return (
     <div className={className}>
-      <label
-        htmlFor={htmlFor}
-        className="mb-1.5 flex items-center gap-1.5 text-[12px] font-medium text-ink-700"
-      >
-        {Icon ? <Icon className="h-3.5 w-3.5 text-ink-400" aria-hidden="true" /> : null}
-        {label}
-        {optional ? (
-          <span className="font-medium normal-case text-ink-400">(optional)</span>
-        ) : null}
-      </label>
+      <div className="mb-1.5 flex items-center justify-between gap-3">
+        <label
+          htmlFor={htmlFor}
+          className="flex items-center gap-1.5 text-[12px] font-medium text-ink-700"
+        >
+          {Icon ? <Icon className="h-3.5 w-3.5 text-ink-400" aria-hidden="true" /> : null}
+          {label}
+          {optional ? (
+            <span className="font-medium normal-case text-ink-400">(optional)</span>
+          ) : null}
+        </label>
+        {action ? <span className="text-[12px] leading-none">{action}</span> : null}
+      </div>
       {children}
+    </div>
+  );
+}
+
+/** The green counterpart to ErrorNote: something went right. */
+function NoticeNote({ message }) {
+  return (
+    <p className="mt-4 flex items-start gap-2 rounded-lg bg-emerald-50 px-3.5 py-3 text-sm font-medium text-emerald-700">
+      <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+      {message}
+    </p>
+  );
+}
+
+/*
+ * The six boxes. Both flows that mail a code render them, and neither should be
+ * the one that owns the keyboard handling.
+ */
+function CodeInputs({ digits, busy, inputsRef, onChange, onKeyDown, onPaste, label, className = '' }) {
+  return (
+    <div
+      className={`flex justify-between gap-2 sm:gap-3 ${className}`}
+      onPaste={onPaste}
+      role="group"
+      aria-label={label}
+    >
+      {digits.map((digit, index) => (
+        <input
+          key={index}
+          ref={(element) => {
+            inputsRef.current[index] = element;
+          }}
+          type="text"
+          inputMode="numeric"
+          autoComplete={index === 0 ? 'one-time-code' : 'off'}
+          maxLength={1}
+          value={digit}
+          disabled={busy}
+          aria-label={`Digit ${index + 1}`}
+          onChange={(event) => onChange(index, event.target.value)}
+          onKeyDown={(event) => onKeyDown(index, event)}
+          onFocus={(event) => event.target.select()}
+          className={`tnum h-14 w-full rounded-lg border text-center text-[22px] font-semibold text-ink-900 transition focus:border-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-700/15 disabled:opacity-60 ${
+            digit ? 'border-brand-600 bg-white' : 'border-ink-200 bg-white'
+          }`}
+        />
+      ))}
     </div>
   );
 }

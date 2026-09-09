@@ -710,6 +710,112 @@ app.post(
   }),
 );
 
+/**
+ * POST /api/auth/forgot-password
+ * Body: { email }
+ *
+ * Mails the same 6-digit code the sign-up uses, this time to prove control of
+ * an inbox that already has an account behind it.
+ *
+ * The reply is deliberately the same whether or not the address is registered.
+ * A reset form that says "no account with that email" is a free membership
+ * oracle: point it at a list of student numbers and it tells you which ones are
+ * enrolled here. The person who genuinely owns the address gets the code; the
+ * person fishing learns nothing either way.
+ */
+app.post(
+  '/api/auth/forgot-password',
+  limitCodeSend,
+  asyncRoute(async (req, res) => {
+    const email = requireHauEmail(req.body?.email);
+    assertMayReceiveCode(email);
+
+    const { rows } = await pool.query(
+      `select registration_completed_at from public.profiles where email = $1`,
+      [email],
+    );
+
+    // A half-finished sign-up has no password to reset -- it is still holding a
+    // place in the registration flow -- so only a completed account gets mail.
+    if (rows[0]?.registration_completed_at) {
+      try {
+        await sendAccessCode(email, { createUser: false });
+      } catch (err) {
+        // 429 is the one failure worth admitting to: it is about this caller's
+        // behaviour, not about whether the account exists, and silently
+        // swallowing it would leave someone waiting for mail that is not coming.
+        if (err.status === 429) throw err;
+      }
+    }
+
+    res.json({
+      ok: true,
+      message: `If ${email} has an account, a 6-digit reset code is on its way.`,
+    });
+  }),
+);
+
+/**
+ * POST /api/auth/reset-password
+ * Body: { email, code, password }
+ *
+ * Verifying the code yields a real session, which is what gives us the standing
+ * to change the password -- the same mechanism the sign-up's final step uses.
+ * That session is disposable: it exists to authorise this one write, and is
+ * revoked before the response goes out.
+ */
+app.post(
+  '/api/auth/reset-password',
+  limitCodeVerify,
+  asyncRoute(async (req, res) => {
+    const email = requireHauEmail(req.body?.email);
+    const code = String(req.body?.code ?? '').trim();
+    const password = String(req.body?.password ?? '');
+
+    if (!CODE_RE.test(code)) throw new HttpError(400, 'The reset code must be 6 digits.');
+    if (password.length < 8) throw new HttpError(400, 'Password must be at least 8 characters.');
+
+    const { data, error } = await supabase.auth.verifyOtp({ email, token: code, type: 'email' });
+    if (error || !data?.session) {
+      throw new HttpError(401, error?.message || 'That reset code is invalid or has expired.');
+    }
+
+    const { rows } = await pool.query(
+      `select registration_completed_at from public.profiles where id = $1`,
+      [data.user.id],
+    );
+    if (!rows[0]?.registration_completed_at) {
+      throw new HttpError(403, 'Finish creating your account first, then sign in.');
+    }
+
+    // updateUser acts on the *caller's* session, so this needs a client carrying
+    // the tokens the code just produced rather than the shared anonymous one.
+    const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    });
+
+    const { error: sessionError } = await userClient.auth.setSession({
+      access_token: data.session.access_token,
+      refresh_token: data.session.refresh_token,
+    });
+    if (sessionError) {
+      throw new HttpError(401, 'That reset code is invalid or has expired.');
+    }
+
+    const { error: updateError } = await userClient.auth.updateUser({ password });
+    if (updateError) {
+      throw new HttpError(400, updateError.message || 'Could not set the new password.');
+    }
+
+    // Global scope, on purpose. Someone resetting a password may be doing it
+    // because another person has it, so every session everywhere goes with it --
+    // including the one this request just minted.
+    await userClient.auth.signOut();
+
+    res.json({ ok: true, message: 'Password updated. Sign in with your new password.' });
+  }),
+);
+
 /** GET /api/me - the signed-in user's profile. */
 app.get(
   '/api/me',
