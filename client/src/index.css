@@ -3,30 +3,63 @@
 /*
  * ConsultTrack design tokens
  * --------------------------
- * The palette is built around HAU's crimson. Accents (amber, emerald, indigo,
- * sky) are borrowed from Tailwind so the dashboard tiles can be colour-coded
- * without inventing a second scale.
+ * Three scales and nothing else, so the app reads as one surface:
+ *
+ *   brand   HAU crimson. Identity, primary actions, the shell.
+ *   ink     The neutral. Warm rather than blue-grey -- next to crimson a cool
+ *           slate reads as slightly dirty, a warm grey as intentional.
+ *   gold    The single accent. Counts, highlights, the "look here" state.
+ *
+ * Status colours (emerald / amber / rose) come from Tailwind's own ramps: they
+ * mean approved, waiting and declined, and inventing a private scale for three
+ * fixed meanings buys nothing.
  */
 @theme {
   --font-sans: 'Plus Jakarta Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
 
   --color-brand-50: #fdf3f5;
-  --color-brand-100: #fbe4e8;
-  --color-brand-200: #f7ccd4;
-  --color-brand-300: #efa5b3;
-  --color-brand-400: #e3738a;
-  --color-brand-500: #d24865;
-  --color-brand-600: #bd2f50;
-  --color-brand-700: #9e2242;
-  --color-brand-800: #85203c;
-  --color-brand-900: #6d1c33;
-  --color-brand-950: #400c1c;
+  --color-brand-100: #fce7ec;
+  --color-brand-200: #f9ccd6;
+  --color-brand-300: #f2a3b6;
+  --color-brand-400: #e8708f;
+  --color-brand-500: #d9456c;
+  --color-brand-600: #c22a55;
+  --color-brand-700: #a11d45;
+  --color-brand-800: #871b3d;
+  --color-brand-900: #6f1a35;
+  --color-brand-950: #3f0a1b;
+
+  /* Warm neutral. ink-500 and up are text; below that, surfaces and hairlines. */
+  --color-ink-50: #faf9f9;
+  --color-ink-100: #f3f1f2;
+  --color-ink-200: #e8e4e6;
+  --color-ink-300: #d5cfd2;
+  --color-ink-400: #a89fa4;
+  --color-ink-500: #7d737a;
+  --color-ink-600: #5f565c;
+  --color-ink-700: #4a4247;
+  --color-ink-800: #322c30;
+  --color-ink-900: #1f1a1d;
+
+  --color-gold-50: #fffaeb;
+  --color-gold-100: #fdf0c8;
+  --color-gold-200: #fbdf8c;
+  --color-gold-300: #f8c750;
+  --color-gold-400: #f5ae28;
+  --color-gold-500: #ef8d0d;
+  --color-gold-600: #d36a08;
+  --color-gold-700: #af4b0b;
 
   /* Page ground behind the rounded app shell. */
-  --color-canvas: #eceef6;
+  --color-canvas: #eeecf0;
 
-  --shadow-card: 0 1px 2px rgb(15 23 42 / 0.04), 0 8px 24px -12px rgb(15 23 42 / 0.12);
-  --shadow-lift: 0 2px 4px rgb(15 23 42 / 0.04), 0 18px 40px -18px rgb(15 23 42 / 0.28);
+  /*
+   * Three shadow depths, each a tight contact shadow plus a wide soft one --
+   * a single large blur reads as fog, the pair reads as a lifted card.
+   */
+  --shadow-card: 0 1px 2px rgb(31 26 29 / 0.05), 0 8px 24px -14px rgb(31 26 29 / 0.16);
+  --shadow-raised: 0 1px 3px rgb(31 26 29 / 0.06), 0 14px 32px -16px rgb(31 26 29 / 0.24);
+  --shadow-lift: 0 2px 6px rgb(31 26 29 / 0.06), 0 28px 60px -24px rgb(31 26 29 / 0.34);
 }
 
 html,
@@ -37,28 +70,40 @@ body,
 
 body {
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
   background-color: var(--color-canvas);
+  /* Two faint crimson washes so the ground behind the shell is not flat grey. */
+  background-image:
+    radial-gradient(52rem 32rem at 12% -8%, rgb(194 42 85 / 0.09), transparent 60%),
+    radial-gradient(44rem 28rem at 92% 6%, rgb(245 174 40 / 0.08), transparent 62%);
+  background-attachment: fixed;
 }
 
 /* Consistent focus ring for every interactive element. */
 :where(button, a, input, select, textarea):focus-visible {
   outline: 2px solid var(--color-brand-600);
   outline-offset: 2px;
+  border-radius: 0.5rem;
 }
 
 /* Slim scrollbars inside panels so the rounded shell keeps its shape. */
 .scrollbar-slim {
   scrollbar-width: thin;
-  scrollbar-color: var(--color-slate-300) transparent;
+  scrollbar-color: var(--color-ink-300) transparent;
 }
 .scrollbar-slim::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 .scrollbar-slim::-webkit-scrollbar-thumb {
-  background-color: var(--color-slate-300);
+  background-color: var(--color-ink-300);
   border-radius: 9999px;
 }
+.scrollbar-slim::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-ink-400);
+}
+
+/* ------------------------------------------------------------- motion --- */
 
 @keyframes float-slow {
   0%,
@@ -73,8 +118,75 @@ body {
   animation: float-slow 6s ease-in-out infinite;
 }
 
+/*
+ * Panels fade up as they mount. --delay staggers a group so a dashboard resolves
+ * in reading order instead of snapping in all at once.
+ */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.animate-rise {
+  animation: rise 0.45s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation-delay: var(--delay, 0ms);
+}
+
+/* The sweep across a skeleton, so loading reads as pending rather than broken. */
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background-color: var(--color-ink-200);
+}
+.skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background-image: linear-gradient(
+    90deg,
+    transparent,
+    rgb(255 255 255 / 0.65),
+    transparent
+  );
+  animation: shimmer 1.6s infinite;
+}
+
+/* Draws attention to a count the moment it changes. */
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 rgb(245 174 40 / 0.55);
+  }
+  70% {
+    box-shadow: 0 0 0 7px rgb(245 174 40 / 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgb(245 174 40 / 0);
+  }
+}
+.animate-ping-badge {
+  animation: pulse-ring 2.4s ease-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .animate-float {
+  .animate-float,
+  .animate-rise,
+  .animate-ping-badge,
+  .skeleton::after {
     animation: none;
+  }
+  .animate-rise {
+    opacity: 1;
+    transform: none;
   }
 }

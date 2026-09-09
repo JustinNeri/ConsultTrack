@@ -33,6 +33,10 @@ const {
   // An entry may name the role it should get: "you@gmail.com:adviser".
   // Leave empty in production.
   AUTH_EMAIL_ALLOWLIST = '',
+  // Consultation hours are wall-clock campus time: an adviser free at 1 PM means
+  // 1 PM in Angeles City, whatever the server's own clock is set to. Every
+  // conversion between a weekly block and a real instant goes through this.
+  CAMPUS_TIMEZONE = 'Asia/Manila',
 } = process.env;
 
 for (const [key, value] of Object.entries({ SUPABASE_URL, SUPABASE_ANON_KEY, DATABASE_URL })) {
@@ -682,6 +686,292 @@ app.get(
   }),
 );
 
+/* --------------------------------------------------- consultation hours -- */
+
+/*
+ * Availability turns booking from a guess into a pick.
+ *
+ * An adviser publishes recurring weekly blocks -- "Wednesdays 1-4 PM, 30-minute
+ * slots, Faculty Room 204". A student opens the booking form, picks a date, and
+ * sees the slots that block produces, with the ones already taken struck out.
+ * The request then lands on a time the adviser has already said they can take,
+ * instead of on a time the adviser has to decline.
+ *
+ * The stored times are wall-clock (`time`, no zone) because a weekly block means
+ * the same campus hour every week. CAMPUS_TIMEZONE is what turns one of those
+ * plus a calendar date into a real instant.
+ */
+
+const HHMM_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
+const SLOT_CHOICES = [15, 20, 30, 45, 60, 90, 120];
+/** Used to space out bookings for an adviser who has published no hours. */
+const DEFAULT_SLOT_MINUTES = 30;
+
+const AVAILABILITY_COLUMNS = `id, weekday, to_char(start_time, 'HH24:MI') as start_time,
+                              to_char(end_time, 'HH24:MI') as end_time,
+                              slot_minutes, location, is_active`;
+
+/** GET /api/availability - the caller's own published consultation hours. */
+app.get(
+  '/api/availability',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    if (req.profile.role !== 'adviser') {
+      throw new HttpError(403, 'Only advisers publish consultation hours.');
+    }
+
+    const { rows } = await pool.query(
+      `select ${AVAILABILITY_COLUMNS}
+         from public.adviser_availability
+        where adviser_id = $1
+        order by weekday asc, start_time asc`,
+      [req.profile.id],
+    );
+
+    res.json({ availability: rows, timezone: CAMPUS_TIMEZONE });
+  }),
+);
+
+/**
+ * POST /api/availability
+ * Body: { weekday: 0-6, start_time: "13:00", end_time: "16:00",
+ *         slot_minutes?: 30, location? }
+ */
+app.post(
+  '/api/availability',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    if (req.profile.role !== 'adviser') {
+      throw new HttpError(403, 'Only advisers publish consultation hours.');
+    }
+
+    const weekday = Number.parseInt(req.body?.weekday, 10);
+    const startTime = String(req.body?.start_time ?? '').trim();
+    const endTime = String(req.body?.end_time ?? '').trim();
+    const slotMinutes = Number.parseInt(req.body?.slot_minutes ?? DEFAULT_SLOT_MINUTES, 10);
+    const location = String(req.body?.location ?? '').trim().slice(0, 200) || null;
+
+    if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) {
+      throw new HttpError(400, 'Pick a day of the week.');
+    }
+    if (!HHMM_RE.test(startTime) || !HHMM_RE.test(endTime)) {
+      throw new HttpError(400, 'Start and end time must look like 13:00.');
+    }
+    if (!SLOT_CHOICES.includes(slotMinutes)) {
+      throw new HttpError(400, `Slot length must be one of ${SLOT_CHOICES.join(', ')} minutes.`);
+    }
+    if (endTime <= startTime) {
+      // Lexical compare is safe: both are zero-padded HH:MM.
+      throw new HttpError(400, 'The end time has to be after the start time.');
+    }
+
+    const minutesLong =
+      (Number(endTime.slice(0, 2)) * 60 + Number(endTime.slice(3))) -
+      (Number(startTime.slice(0, 2)) * 60 + Number(startTime.slice(3)));
+    if (minutesLong < slotMinutes) {
+      throw new HttpError(
+        400,
+        `That block is only ${minutesLong} minutes long - too short for a ${slotMinutes}-minute slot.`,
+      );
+    }
+
+    // Overlapping blocks on the same day would offer the same hour twice.
+    const { rows: overlap } = await pool.query(
+      `select 1 from public.adviser_availability
+        where adviser_id = $1 and weekday = $2
+          and start_time < $4::time and end_time > $3::time
+        limit 1`,
+      [req.profile.id, weekday, startTime, endTime],
+    );
+    if (overlap.length) {
+      throw new HttpError(409, 'That overlaps consultation hours you already published.');
+    }
+
+    const { rows } = await pool.query(
+      `insert into public.adviser_availability
+              (adviser_id, weekday, start_time, end_time, slot_minutes, location)
+       values ($1, $2, $3::time, $4::time, $5, $6)
+    returning ${AVAILABILITY_COLUMNS}`,
+      [req.profile.id, weekday, startTime, endTime, slotMinutes, location],
+    );
+
+    res.status(201).json({ availability: rows[0] });
+  }),
+);
+
+/**
+ * DELETE /api/availability/:id
+ * Removes a block. Sessions already booked out of it are untouched - they are
+ * real consultations now, not slots.
+ */
+app.delete(
+  '/api/availability/:id',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    if (req.profile.role !== 'adviser') {
+      throw new HttpError(403, 'Only advisers publish consultation hours.');
+    }
+    if (!UUID_RE.test(String(req.params.id))) {
+      throw new HttpError(400, 'That block is not valid.');
+    }
+
+    const { rows } = await pool.query(
+      `delete from public.adviser_availability
+        where id = $1 and adviser_id = $2
+    returning id`,
+      [req.params.id, req.profile.id],
+    );
+
+    if (!rows[0]) throw new HttpError(404, 'Those consultation hours no longer exist.');
+    res.json({ ok: true, id: rows[0].id });
+  }),
+);
+
+/**
+ * GET /api/advisers/:id/slots?date=YYYY-MM-DD
+ *
+ * The booking picker. Returns every slot the adviser's blocks produce on that
+ * date, each flagged `taken` when a pending or scheduled session already sits in
+ * it, plus `weekdays` - the days of the week they hold hours at all, so the form
+ * can steer the student to a day that has any.
+ */
+app.get(
+  '/api/advisers/:id/slots',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const adviserId = String(req.params.id);
+    if (!UUID_RE.test(adviserId)) throw new HttpError(400, 'That adviser is not valid.');
+
+    const date = String(req.query.date ?? '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      throw new HttpError(400, 'Pass the date as YYYY-MM-DD.');
+    }
+
+    // Same department rule as the directory and the booking route: a student
+    // cannot enumerate another school's advisers by guessing ids.
+    const { rows: adviser } = await pool.query(
+      `select department from public.profiles
+        where id = $1 and role = 'adviser' and registration_completed_at is not null
+        limit 1`,
+      [adviserId],
+    );
+    if (!adviser.length) throw new HttpError(404, 'That adviser was not found.');
+
+    const bookerDepartment = req.profile.department;
+    if (bookerDepartment && adviser[0].department && adviser[0].department !== bookerDepartment) {
+      throw new HttpError(403, `You can only book advisers from ${bookerDepartment}.`);
+    }
+
+    const [{ rows: slots }, { rows: days }] = await Promise.all([
+      pool.query(
+        `with args as (
+           select $1::uuid as adviser_id, $2::date as on_date, $3::text as tz
+         ), block as (
+           select a.slot_minutes,
+                  a.location,
+                  generate_series(
+                    ((g.on_date + a.start_time) at time zone g.tz),
+                    ((g.on_date + a.end_time) at time zone g.tz)
+                      - make_interval(mins => a.slot_minutes),
+                    make_interval(mins => a.slot_minutes)
+                  ) as slot_start
+             from args g
+             join public.adviser_availability a
+               on a.adviser_id = g.adviser_id
+              and a.is_active
+              and a.weekday = extract(dow from g.on_date)
+         )
+         select b.slot_start,
+                b.slot_start + make_interval(mins => b.slot_minutes) as slot_end,
+                b.slot_minutes,
+                b.location,
+                exists (
+                  select 1
+                    from public.consultations c, args g
+                   where c.adviser_id = g.adviser_id
+                     and c.status in ('pending', 'scheduled')
+                     and c.meeting_date >= b.slot_start
+                     and c.meeting_date <  b.slot_start
+                                           + make_interval(mins => b.slot_minutes)
+                ) as taken
+           from block b
+          where b.slot_start > now()
+          order by b.slot_start asc`,
+        [adviserId, date, CAMPUS_TIMEZONE],
+      ),
+      pool.query(
+        `select distinct weekday from public.adviser_availability
+          where adviser_id = $1 and is_active
+          order by weekday asc`,
+        [adviserId],
+      ),
+    ]);
+
+    res.json({
+      slots,
+      weekdays: days.map((row) => row.weekday),
+      timezone: CAMPUS_TIMEZONE,
+    });
+  }),
+);
+
+/**
+ * Whether `meetingDate` is a time this adviser can actually be booked for.
+ *
+ * Two separate rules, and the first only applies once the adviser has published
+ * something: an adviser with no hours on file keeps the old free-form booking,
+ * so nobody is locked out by a feature they have not set up yet.
+ *
+ *   1. published hours  -> the time must sit on a slot boundary inside a block
+ *   2. always           -> the slot must not already be spoken for
+ */
+async function slotStatus(adviserId, meetingDate) {
+  const { rows } = await pool.query(
+    `with req as (
+       select $1::uuid as adviser_id,
+              $2::timestamptz as at,
+              ($2::timestamptz at time zone $3) as local_ts
+     ), match as (
+       select a.slot_minutes, a.location
+         from public.adviser_availability a, req r
+        where a.adviser_id = r.adviser_id
+          and a.is_active
+          and a.weekday = extract(dow from r.local_ts)
+          and r.local_ts::time >= a.start_time
+          and r.local_ts::time <  a.end_time
+          -- Landing mid-slot would silently shift every later slot along.
+          and mod(
+                extract(epoch from (r.local_ts::time - a.start_time))::int,
+                a.slot_minutes * 60
+              ) = 0
+        limit 1
+     )
+     select (select count(*)::int
+               from public.adviser_availability a, req r
+              where a.adviser_id = r.adviser_id and a.is_active)  as block_count,
+            (select slot_minutes from match)                      as slot_minutes,
+            (select location from match)                          as slot_location,
+            (select count(*)::int
+               from public.consultations c, req r
+              where c.adviser_id = r.adviser_id
+                and c.status in ('pending', 'scheduled')
+                and c.meeting_date > r.at
+                      - make_interval(mins => coalesce((select slot_minutes from match), $4))
+                and c.meeting_date < r.at
+                      + make_interval(mins => coalesce((select slot_minutes from match), $4))
+            )                                                     as clashes`,
+    [adviserId, meetingDate.toISOString(), CAMPUS_TIMEZONE, DEFAULT_SLOT_MINUTES],
+  );
+
+  const row = rows[0];
+  return {
+    publishesHours: row.block_count > 0,
+    insideBlock: row.slot_minutes !== null,
+    slotLocation: row.slot_location,
+    taken: row.clashes > 0,
+  };
+}
+
 /**
  * GET /api/tasks/pending
  * Every open action item the caller is allowed to see.
@@ -770,17 +1060,41 @@ app.post(
       throw new HttpError(403, `You can only book advisers from ${bookerDepartment}.`);
     }
 
+    // Does the adviser's diary allow this time at all? An adviser booking their
+    // own session is exempt from the published-hours rule -- those hours exist to
+    // tell students when to ask, and the adviser is not asking anyone.
+    const bookingSelf = adviserId === req.profile.id;
+    const slot = await slotStatus(adviserId, meetingDate);
+
+    if (!bookingSelf && slot.publishesHours && !slot.insideBlock) {
+      throw new HttpError(
+        409,
+        'That time is outside the consultation hours your adviser published. Pick one of the open slots.',
+      );
+    }
+    if (slot.taken) {
+      throw new HttpError(
+        409,
+        bookingSelf
+          ? 'You already have a session at that time.'
+          : 'Somebody just took that slot. Pick another one.',
+      );
+    }
+
     // A student is asking; the adviser has to say yes before it counts. An
     // adviser booking one of their own groups is already the approver, so their
     // session is official the moment it is created.
-    const status = adviserId === req.profile.id ? 'scheduled' : 'pending';
+    const status = bookingSelf ? 'scheduled' : 'pending';
 
     const { rows } = await pool.query(
       `insert into public.consultations
               (adviser_id, group_name, topic, location, meeting_date, status, created_by)
        values ($1, $2, $3, $4, $5, $7, $6)
     returning id, adviser_id, group_name, topic, location, meeting_date, status, created_at`,
-      [adviserId, groupName, topic, location, meetingDate.toISOString(), req.profile.id, status],
+      // A slot carries the room its block named, so a student who left the
+      // location blank still gets "Faculty Room 204" on the booking.
+      [adviserId, groupName, topic, location ?? slot.slotLocation, meetingDate.toISOString(),
+       req.profile.id, status],
     );
 
     res.status(201).json({ consultation: rows[0] });

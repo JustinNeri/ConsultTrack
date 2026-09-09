@@ -4,6 +4,7 @@ import {
   ArrowRight,
   Bell,
   Briefcase,
+  CalendarClock,
   CalendarDays,
   CalendarPlus,
   Check,
@@ -31,6 +32,7 @@ import {
   X,
 } from 'lucide-react';
 import BookingModal from './BookingModal.jsx';
+import AvailabilityView from './AvailabilityView.jsx';
 import { api } from '../lib/api.js';
 
 /**
@@ -52,6 +54,10 @@ function navItems(isAdviser) {
     { key: 'overview', label: 'Dashboard', icon: LayoutDashboard },
     // An adviser answers requests; a student watches their own.
     { key: 'requests', label: isAdviser ? 'Requests' : 'My requests', icon: Inbox, badge: true },
+    // Only an adviser has hours to publish; a student books out of them.
+    ...(isAdviser
+      ? [{ key: 'availability', label: 'Consultation hours', icon: CalendarClock }]
+      : []),
     { key: 'tasks', label: 'Action items', icon: ListChecks },
     { key: 'profile', label: 'My profile', icon: UserRound },
   ];
@@ -85,6 +91,9 @@ export default function Dashboard({ session, onSignOut }) {
   // Consultation requests: an adviser's are waiting on their decision, a
   // student's are waiting on their adviser.
   const [requests, setRequests] = useState([]);
+  // How many consultation-hour blocks the adviser publishes. Zero is what
+  // triggers the nudge on their overview -- students are guessing until then.
+  const [hourBlocks, setHourBlocks] = useState(null);
   const [busyRequestId, setBusyRequestId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -109,16 +118,19 @@ export default function Dashboard({ session, onSignOut }) {
       try {
         // Advisers also get their full upcoming schedule - it is what their
         // side rail shows in place of the student milestone tracker.
-        const [nextResult, tasksResult, requestsResult, scheduleResult] = await Promise.all([
-          api('/consultations/next', { token }),
-          api('/tasks/pending', { token }),
-          api('/consultations/requests', { token }),
-          isAdviser ? api('/consultations?limit=6', { token }) : Promise.resolve(null),
-        ]);
+        const [nextResult, tasksResult, requestsResult, scheduleResult, hoursResult] =
+          await Promise.all([
+            api('/consultations/next', { token }),
+            api('/tasks/pending', { token }),
+            api('/consultations/requests', { token }),
+            isAdviser ? api('/consultations?limit=6', { token }) : Promise.resolve(null),
+            isAdviser ? api('/availability', { token }) : Promise.resolve(null),
+          ]);
         setConsultation(nextResult.consultation);
         setTasks(tasksResult.tasks ?? []);
         setRequests(requestsResult.requests ?? []);
         setSchedule(scheduleResult?.consultations ?? []);
+        setHourBlocks(hoursResult ? (hoursResult.availability ?? []).length : null);
       } catch (err) {
         if (err.status === 401) {
           onSignOut();
@@ -230,7 +242,7 @@ export default function Dashboard({ session, onSignOut }) {
 
   return (
     <div className="min-h-screen bg-canvas lg:p-4">
-      <div className="mx-auto flex min-h-screen w-full max-w-[1600px] overflow-hidden bg-white lg:min-h-[calc(100vh-2rem)] lg:rounded-3xl lg:shadow-lift lg:ring-1 lg:ring-slate-900/5">
+      <div className="mx-auto flex min-h-screen w-full max-w-[1600px] overflow-hidden bg-white lg:min-h-[calc(100vh-2rem)] lg:rounded-3xl lg:shadow-lift lg:ring-1 lg:ring-ink-900/5">
         <Sidebar
           view={view}
           isAdviser={isAdviser}
@@ -258,7 +270,7 @@ export default function Dashboard({ session, onSignOut }) {
             onOpenNav={() => setNavOpen(true)}
           />
 
-          <main className="scrollbar-slim flex-1 overflow-y-auto bg-slate-50/70 px-4 py-6 sm:px-7 sm:py-8">
+          <main className="scrollbar-slim flex-1 overflow-y-auto bg-ink-50/70 px-4 py-6 sm:px-7 sm:py-8">
             {error ? (
               <div
                 role="alert"
@@ -312,6 +324,8 @@ export default function Dashboard({ session, onSignOut }) {
                 onSeeAllTasks={() => goTo('tasks')}
                 progress={progress}
                 nextMilestone={nextMilestone}
+                hourBlocks={hourBlocks}
+                onSetHours={() => goTo('availability')}
               />
             ) : null}
 
@@ -335,6 +349,14 @@ export default function Dashboard({ session, onSignOut }) {
                 onQueryChange={handleSearch}
                 busyTaskId={busyTaskId}
                 onResolve={resolveTask}
+              />
+            ) : null}
+
+            {view === 'availability' && isAdviser ? (
+              <AvailabilityView
+                token={token}
+                onSignOut={onSignOut}
+                onHoursChanged={setHourBlocks}
               />
             ) : null}
 
@@ -376,18 +398,27 @@ function Sidebar({ view, isAdviser, requestCount, onNavigate, onSignOut, onBook,
           type="button"
           aria-label="Close navigation"
           onClick={onClose}
-          className="fixed inset-0 z-40 bg-slate-900/40 backdrop-blur-sm lg:hidden"
+          className="fixed inset-0 z-40 bg-ink-900/40 backdrop-blur-sm lg:hidden"
         />
       ) : null}
 
       <aside
-        className={`fixed inset-y-0 left-0 z-50 flex w-72 flex-col bg-gradient-to-b from-brand-800 via-brand-800 to-brand-950 p-5 transition-transform duration-300 lg:static lg:z-auto lg:w-64 lg:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-50 flex w-72 flex-col overflow-hidden bg-gradient-to-b from-brand-800 via-brand-900 to-brand-950 p-5 transition-transform duration-300 lg:static lg:z-auto lg:w-64 lg:translate-x-0 ${
           open ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
-        <div className="flex items-center justify-between">
+        {/* A warm bloom behind the wordmark keeps the crimson from going flat. */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -left-16 -top-16 h-56 w-56 rounded-full bg-brand-500/25 blur-3xl"
+        />
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -bottom-24 -right-16 h-56 w-56 rounded-full bg-gold-500/10 blur-3xl"
+        />
+        <div className="relative flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-white/15 ring-1 ring-white/25">
+            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-white/15 ring-1 ring-white/25 backdrop-blur">
               <GraduationCap className="h-6 w-6 text-white" aria-hidden="true" />
             </div>
             <div>
@@ -405,7 +436,7 @@ function Sidebar({ view, isAdviser, requestCount, onNavigate, onSignOut, onBook,
           </button>
         </div>
 
-        <nav className="mt-9 flex flex-1 flex-col gap-1.5">
+        <nav className="relative mt-9 flex flex-1 flex-col gap-1.5">
           <p className="mb-1 px-3 text-[10px] font-bold uppercase tracking-widest text-brand-300/70">
             Menu
           </p>
@@ -418,18 +449,31 @@ function Sidebar({ view, isAdviser, requestCount, onNavigate, onSignOut, onBook,
                 type="button"
                 onClick={() => onNavigate(key)}
                 aria-current={active ? 'page' : undefined}
-                className={`flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition ${
+                className={`group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition ${
                   active
-                    ? 'bg-white font-bold text-brand-800 shadow-md shadow-brand-950/30'
+                    ? 'bg-white font-bold text-brand-800 shadow-lg shadow-brand-950/40'
                     : 'font-medium text-brand-100/80 hover:bg-white/10 hover:text-white'
                 }`}
               >
-                <Icon className="h-5 w-5" aria-hidden="true" />
+                {/* A gold rule on the active item, so the current view is
+                    readable from the edge of the eye. */}
+                <span
+                  aria-hidden="true"
+                  className={`absolute -left-5 top-1/2 h-6 w-1 -translate-y-1/2 rounded-r-full bg-gold-300 transition-opacity ${
+                    active ? 'opacity-100' : 'opacity-0'
+                  }`}
+                />
+                <Icon
+                  className={`h-5 w-5 transition-transform ${active ? '' : 'group-hover:scale-110'}`}
+                  aria-hidden="true"
+                />
                 {label}
                 {count > 0 ? (
                   <span
                     className={`ml-auto flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-[10px] font-bold ${
-                      active ? 'bg-brand-700 text-white' : 'bg-amber-400 text-brand-950'
+                      active
+                        ? 'bg-brand-700 text-white'
+                        : 'animate-ping-badge bg-gold-300 text-brand-950'
                     }`}
                   >
                     {count > 9 ? '9+' : count}
@@ -439,8 +483,8 @@ function Sidebar({ view, isAdviser, requestCount, onNavigate, onSignOut, onBook,
             );
           })}
 
-          <div className="mt-6 rounded-2xl bg-white/10 p-4 ring-1 ring-white/15">
-            <Sparkles className="h-5 w-5 text-amber-300" aria-hidden="true" />
+          <div className="mt-6 rounded-2xl bg-white/10 p-4 ring-1 ring-white/15 backdrop-blur">
+            <Sparkles className="h-5 w-5 text-gold-300" aria-hidden="true" />
             <p className="mt-2.5 text-sm font-bold text-white">
               {isAdviser ? 'Set a session' : 'Need your adviser?'}
             </p>
@@ -463,7 +507,7 @@ function Sidebar({ view, isAdviser, requestCount, onNavigate, onSignOut, onBook,
         <button
           type="button"
           onClick={onSignOut}
-          className="mt-6 flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-brand-100/80 transition hover:bg-white/10 hover:text-white"
+          className="relative mt-6 flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-brand-100/80 transition hover:bg-white/10 hover:text-white"
         >
           <LogOut className="h-5 w-5" aria-hidden="true" />
           Sign out
@@ -495,19 +539,19 @@ function TopBar({
     .join(' - ');
 
   return (
-    <header className="flex items-center gap-3 border-b border-slate-100 bg-white px-4 py-3.5 sm:px-7">
+    <header className="sticky top-0 z-30 flex items-center gap-3 border-b border-ink-100 bg-white/85 px-4 py-3.5 backdrop-blur-xl sm:px-7">
       <button
         type="button"
         onClick={onOpenNav}
         aria-label="Open navigation"
-        className="rounded-xl p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 lg:hidden"
+        className="rounded-xl p-2 text-ink-500 transition hover:bg-ink-100 hover:text-ink-900 lg:hidden"
       >
         <Menu className="h-5 w-5" aria-hidden="true" />
       </button>
 
       <div className="relative min-w-0 flex-1 sm:max-w-md">
         <Search
-          className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
+          className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400"
           aria-hidden="true"
         />
         <input
@@ -516,7 +560,7 @@ function TopBar({
           onChange={(event) => onSearch(event.target.value)}
           placeholder="Search action items..."
           aria-label="Search action items"
-          className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-3 text-sm text-slate-900 transition placeholder:text-slate-400 focus:border-brand-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-brand-500/10"
+          className="w-full rounded-xl border border-ink-200 bg-ink-50 py-2.5 pl-10 pr-3 text-sm text-ink-900 transition placeholder:text-ink-400 focus:border-brand-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-brand-500/10"
         />
       </div>
 
@@ -526,7 +570,7 @@ function TopBar({
           onClick={onRefresh}
           disabled={refreshing}
           aria-label="Refresh dashboard"
-          className="rounded-xl p-2.5 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 disabled:opacity-50"
+          className="rounded-xl p-2.5 text-ink-500 transition hover:bg-ink-100 hover:text-ink-900 disabled:opacity-50"
         >
           <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} aria-hidden="true" />
         </button>
@@ -543,11 +587,11 @@ function TopBar({
                 ? `${noticeCount} consultation ${noticeCount === 1 ? 'request' : 'requests'} awaiting your approval`
                 : `${noticeCount} consultation ${noticeCount === 1 ? 'request' : 'requests'} to review`
           }
-          className="relative rounded-xl p-2.5 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
+          className="relative rounded-xl p-2.5 text-ink-500 transition hover:bg-ink-100 hover:text-ink-900"
         >
           <Bell className="h-4 w-4" aria-hidden="true" />
           {noticeCount > 0 ? (
-            <span className="absolute right-1.5 top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-brand-600 px-1 text-[9px] font-bold text-white">
+            <span className="animate-ping-badge absolute right-1 top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-brand-600 px-1 text-[9px] font-bold text-white ring-2 ring-white">
               {noticeCount > 9 ? '9+' : noticeCount}
             </span>
           ) : null}
@@ -556,10 +600,10 @@ function TopBar({
         <div className="flex items-center gap-2.5 rounded-xl py-1 pl-1 pr-1 sm:pr-3">
           <Avatar name={profile.full_name || profile.email} />
           <div className="hidden leading-tight sm:block">
-            <p className="max-w-[11rem] truncate text-sm font-bold text-slate-900">
+            <p className="max-w-[11rem] truncate text-sm font-bold text-ink-900">
               {profile.full_name || profile.email}
             </p>
-            <p className="max-w-[11rem] truncate text-xs text-slate-500">
+            <p className="max-w-[11rem] truncate text-xs text-ink-500">
               {subtitle || (profile.role ?? 'student')}
             </p>
           </div>
@@ -609,6 +653,8 @@ function OverviewView({
   onSeeAllTasks,
   progress,
   nextMilestone,
+  hourBlocks,
+  onSetHours,
 }) {
   const meetingDate = consultation ? new Date(consultation.meeting_date) : null;
   const daysAway = meetingDate
@@ -631,11 +677,16 @@ function OverviewView({
     <div className="space-y-6">
       <HeroBanner displayName={displayName} isAdviser={isAdviser} onBook={onBook} />
 
+      {/* An adviser with no published hours is still fielding guessed times. */}
+      {isAdviser && !loading && hourBlocks === 0 ? (
+        <PublishHoursPrompt onSetHours={onSetHours} />
+      ) : null}
+
       {/* ------------------------------------------------------- stat tiles */}
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {loading ? (
           [0, 1, 2].map((key) => (
-            <div key={key} className="h-32 animate-pulse rounded-2xl bg-slate-200/70" />
+            <div key={key} className="h-32 skeleton rounded-2xl" />
           ))
         ) : (
           <>
@@ -644,6 +695,7 @@ function OverviewView({
               tone="indigo"
               label="Next consultation"
               value={countdown}
+              delay={0}
               hint={
                 meetingDate
                   ? dateFormatter.format(meetingDate)
@@ -658,6 +710,7 @@ function OverviewView({
               tone="amber"
               label="Open action items"
               value={String(tasks.length)}
+              delay={70}
               hint={
                 tasks.length === 0
                   ? 'Everything is resolved'
@@ -672,6 +725,7 @@ function OverviewView({
                 tone="emerald"
                 label="Groups booked"
                 value={String(bookedGroups)}
+                delay={140}
                 hint={`${schedule.length} upcoming ${schedule.length === 1 ? 'session' : 'sessions'}`}
               />
             ) : (
@@ -680,6 +734,7 @@ function OverviewView({
                 tone="emerald"
                 label="Capstone progress"
                 value={`${progress}%`}
+                delay={140}
                 hint={`Next up: ${nextMilestone}`}
               />
             )}
@@ -726,7 +781,7 @@ function OverviewView({
           <section>
             <SectionHeading title="Upcoming consultation" />
             {loading ? (
-              <div className="h-52 animate-pulse rounded-2xl bg-slate-200/70" />
+              <div className="h-52 skeleton rounded-2xl" />
             ) : (
               <ConsultationCard
                 consultation={consultation}
@@ -756,7 +811,7 @@ function OverviewView({
             {loading ? (
               <div className="grid gap-4 sm:grid-cols-2">
                 {[0, 1].map((key) => (
-                  <div key={key} className="h-32 animate-pulse rounded-2xl bg-slate-200/70" />
+                  <div key={key} className="h-32 skeleton rounded-2xl" />
                 ))}
               </div>
             ) : tasks.length === 0 ? (
@@ -791,21 +846,64 @@ function OverviewView({
   );
 }
 
+/**
+ * Shown once, to an adviser who has published nothing. Consultation hours are
+ * the difference between answering every guessed time and having students pick
+ * from slots that already work -- but only if the adviser knows they exist.
+ */
+function PublishHoursPrompt({ onSetHours }) {
+  return (
+    <section className="animate-rise flex flex-wrap items-center gap-4 rounded-2xl border border-gold-200 bg-gradient-to-r from-gold-50 to-white p-5 shadow-card">
+      <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-gold-100 text-gold-700">
+        <CalendarClock className="h-6 w-6" aria-hidden="true" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="font-extrabold tracking-tight text-ink-900">
+          Publish your consultation hours
+        </p>
+        <p className="mt-0.5 text-sm leading-relaxed text-ink-600">
+          Right now students pick any time they like and wait for you to answer. Publish the
+          hours you are free and they can only book slots that already work for you.
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={onSetHours}
+        className="ml-auto inline-flex shrink-0 items-center gap-2 rounded-xl bg-ink-900 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-ink-800 active:scale-[0.99]"
+      >
+        Set my hours
+        <ChevronRight className="h-4 w-4" aria-hidden="true" />
+      </button>
+    </section>
+  );
+}
+
 function HeroBanner({ displayName, isAdviser, onBook }) {
   return (
-    <section className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-brand-700 via-brand-800 to-brand-950 px-6 py-8 sm:px-9 sm:py-10">
+    <section className="animate-rise relative overflow-hidden rounded-3xl bg-gradient-to-br from-brand-700 via-brand-800 to-brand-950 px-6 py-8 shadow-raised sm:px-9 sm:py-10">
       <div
         className="pointer-events-none absolute -right-10 -top-16 h-56 w-56 rounded-full bg-brand-400/30 blur-3xl"
         aria-hidden="true"
       />
       <div
-        className="pointer-events-none absolute -bottom-20 left-1/3 h-52 w-52 rounded-full bg-amber-400/20 blur-3xl"
+        className="pointer-events-none absolute -bottom-20 left-1/3 h-52 w-52 rounded-full bg-gold-400/20 blur-3xl"
         aria-hidden="true"
+      />
+      {/* A faint grid, so the largest surface on the page is not bare gradient. */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 opacity-[0.07]"
+        style={{
+          backgroundImage:
+            'linear-gradient(to right, #fff 1px, transparent 1px), linear-gradient(to bottom, #fff 1px, transparent 1px)',
+          backgroundSize: '3rem 3rem',
+        }}
       />
 
       <div className="relative flex flex-wrap items-center justify-between gap-8">
         <div className="min-w-0 max-w-xl">
-          <p className="text-xs font-semibold text-brand-200">
+          <p className="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-xs font-semibold text-brand-100 ring-1 ring-white/15 backdrop-blur">
+            <CalendarDays className="h-3.5 w-3.5" aria-hidden="true" />
             {todayFormatter.format(new Date())}
           </p>
           <h1 className="mt-3 text-3xl font-extrabold leading-tight tracking-tight text-white sm:text-4xl">
@@ -819,7 +917,7 @@ function HeroBanner({ displayName, isAdviser, onBook }) {
           <button
             type="button"
             onClick={onBook}
-            className="mt-6 inline-flex items-center gap-2 rounded-xl bg-white px-5 py-3 text-sm font-bold text-brand-800 shadow-lg shadow-brand-950/25 transition hover:bg-brand-50 active:scale-[0.99]"
+            className="mt-6 inline-flex items-center gap-2 rounded-xl bg-white px-5 py-3 text-sm font-bold text-brand-800 shadow-lg shadow-brand-950/25 transition hover:-translate-y-0.5 hover:bg-brand-50 hover:shadow-xl active:translate-y-0 active:scale-[0.99]"
           >
             <CalendarPlus className="h-4 w-4" aria-hidden="true" />
             {isAdviser ? 'Schedule a session' : 'Book consultation'}
@@ -831,7 +929,7 @@ function HeroBanner({ displayName, isAdviser, onBook }) {
           <div className="animate-float flex h-32 w-32 items-center justify-center rounded-3xl bg-white/10 ring-1 ring-white/20 backdrop-blur">
             <GraduationCap className="h-16 w-16 text-white/90" />
           </div>
-          <span className="absolute -left-6 top-4 h-4 w-4 rounded-full bg-amber-300" />
+          <span className="absolute -left-6 top-4 h-4 w-4 rounded-full bg-gold-300" />
           <span className="absolute -bottom-2 -left-2 h-6 w-6 rounded-full bg-brand-300/70" />
           <span className="absolute -right-3 bottom-6 h-3 w-3 rounded-full bg-emerald-300" />
         </div>
@@ -840,21 +938,37 @@ function HeroBanner({ displayName, isAdviser, onBook }) {
   );
 }
 
+/*
+ * Each tone is an icon chip plus the hairline that tops the card, so the three
+ * tiles are told apart by a 3px rule rather than by three loud backgrounds.
+ */
 const TONES = {
-  indigo: 'bg-indigo-50 text-indigo-600',
-  amber: 'bg-amber-50 text-amber-600',
-  emerald: 'bg-emerald-50 text-emerald-600',
+  indigo: { chip: 'bg-indigo-50 text-indigo-600', rule: 'from-indigo-400 to-indigo-600' },
+  amber: { chip: 'bg-gold-100 text-gold-700', rule: 'from-gold-300 to-gold-500' },
+  emerald: { chip: 'bg-emerald-50 text-emerald-600', rule: 'from-emerald-400 to-emerald-600' },
 };
 
-function StatTile({ icon: Icon, tone, label, value, hint, highlighted = false }) {
+function StatTile({ icon: Icon, tone, label, value, hint, highlighted = false, delay = 0 }) {
+  const { chip, rule } = TONES[tone];
+
   return (
     <article
-      className={`rounded-2xl bg-white p-5 shadow-card transition ${
-        highlighted ? 'ring-2 ring-brand-600' : 'ring-1 ring-slate-100 hover:ring-slate-200'
+      style={{ '--delay': `${delay}ms` }}
+      className={`animate-rise group relative overflow-hidden rounded-2xl bg-white p-5 shadow-card transition duration-300 hover:-translate-y-1 hover:shadow-raised ${
+        highlighted ? 'ring-2 ring-brand-600' : 'ring-1 ring-ink-100 hover:ring-ink-200'
       }`}
     >
+      <span
+        aria-hidden="true"
+        className={`absolute inset-x-0 top-0 h-1 bg-gradient-to-r ${
+          highlighted ? 'from-brand-500 to-brand-700' : rule
+        }`}
+      />
+
       <div className="flex items-start justify-between gap-3">
-        <span className={`flex h-11 w-11 items-center justify-center rounded-xl ${TONES[tone]}`}>
+        <span
+          className={`flex h-11 w-11 items-center justify-center rounded-xl transition-transform duration-300 group-hover:scale-110 ${chip}`}
+        >
           <Icon className="h-5 w-5" aria-hidden="true" />
         </span>
         {highlighted ? (
@@ -863,9 +977,9 @@ function StatTile({ icon: Icon, tone, label, value, hint, highlighted = false })
           </span>
         ) : null}
       </div>
-      <p className="mt-4 text-2xl font-extrabold tracking-tight text-slate-900">{value}</p>
-      <p className="mt-0.5 text-sm font-semibold text-slate-600">{label}</p>
-      <p className="mt-1 truncate text-xs text-slate-400">{hint}</p>
+      <p className="mt-4 text-2xl font-extrabold tracking-tight text-ink-900">{value}</p>
+      <p className="mt-0.5 text-sm font-semibold text-ink-600">{label}</p>
+      <p className="mt-1 truncate text-xs text-ink-400">{hint}</p>
     </article>
   );
 }
@@ -873,7 +987,7 @@ function StatTile({ icon: Icon, tone, label, value, hint, highlighted = false })
 function SectionHeading({ title, action }) {
   return (
     <div className="mb-4 flex items-center justify-between gap-3">
-      <h2 className="text-base font-extrabold tracking-tight text-slate-900">{title}</h2>
+      <h2 className="text-base font-extrabold tracking-tight text-ink-900">{title}</h2>
       {action}
     </div>
   );
@@ -884,12 +998,12 @@ function SectionHeading({ title, action }) {
 function ConsultationCard({ consultation, countdown, isAdviser, onBook }) {
   if (!consultation) {
     return (
-      <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-12 text-center shadow-card">
-        <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-100">
-          <CalendarDays className="h-7 w-7 text-slate-400" aria-hidden="true" />
+      <div className="rounded-2xl border border-dashed border-ink-300 bg-white px-6 py-12 text-center shadow-card">
+        <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-ink-100">
+          <CalendarDays className="h-7 w-7 text-ink-400" aria-hidden="true" />
         </span>
-        <p className="mt-4 font-bold text-slate-900">No upcoming consultation</p>
-        <p className="mt-1 text-sm text-slate-500">
+        <p className="mt-4 font-bold text-ink-900">No upcoming consultation</p>
+        <p className="mt-1 text-sm text-ink-500">
           {isAdviser
             ? 'Nothing is booked with you yet. You can schedule a session yourself.'
             : 'Book a session with your adviser to keep the thesis moving.'}
@@ -909,13 +1023,13 @@ function ConsultationCard({ consultation, countdown, isAdviser, onBook }) {
   const meetingDate = new Date(consultation.meeting_date);
 
   return (
-    <article className="rounded-2xl bg-white p-6 shadow-card ring-1 ring-slate-100">
+    <article className="animate-rise rounded-2xl bg-white p-6 shadow-card ring-1 ring-ink-100 transition duration-300 hover:shadow-raised">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-xs font-bold uppercase tracking-widest text-brand-600">
             {consultation.group_name || 'Consultation'}
           </p>
-          <h3 className="mt-1.5 text-xl font-extrabold tracking-tight text-slate-900">
+          <h3 className="mt-1.5 text-xl font-extrabold tracking-tight text-ink-900">
             {consultation.topic}
           </h3>
         </div>
@@ -939,12 +1053,12 @@ function ConsultationCard({ consultation, countdown, isAdviser, onBook }) {
 
 function Detail({ icon: Icon, label, value }) {
   return (
-    <div className="rounded-xl bg-slate-50 p-3.5">
-      <dt className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-slate-400">
+    <div className="rounded-xl bg-ink-50 p-3.5 ring-1 ring-ink-100 transition hover:bg-brand-50/50 hover:ring-brand-100">
+      <dt className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-ink-400">
         <Icon className="h-3.5 w-3.5" aria-hidden="true" />
         {label}
       </dt>
-      <dd className="mt-1 text-sm font-bold text-slate-800">{value}</dd>
+      <dd className="mt-1 text-sm font-bold text-ink-800">{value}</dd>
     </div>
   );
 }
@@ -968,22 +1082,27 @@ function RequestCard({ request, isAdviser, busy, onDecide }) {
 
   return (
     <article
-      className={`rounded-2xl bg-white p-5 shadow-card ring-1 transition ${
-        declined ? 'ring-rose-100' : 'ring-amber-200'
+      className={`animate-rise relative overflow-hidden rounded-2xl bg-white p-5 shadow-card ring-1 transition duration-300 hover:shadow-raised ${
+        declined ? 'ring-rose-100' : 'ring-gold-200'
       }`}
     >
+      <span
+        aria-hidden="true"
+        className={`absolute inset-y-0 left-0 w-1 ${declined ? 'bg-rose-400' : 'bg-gold-400'}`}
+      />
+
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-xs font-bold uppercase tracking-widest text-brand-600">
             {request.group_name || 'Consultation'}
           </p>
-          <h3 className="mt-1.5 text-lg font-extrabold tracking-tight text-slate-900">
+          <h3 className="mt-1.5 text-lg font-extrabold tracking-tight text-ink-900">
             {request.topic}
           </h3>
         </div>
         <span
           className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-bold ${
-            declined ? 'bg-rose-50 text-rose-700' : 'bg-amber-50 text-amber-700'
+            declined ? 'bg-rose-50 text-rose-700' : 'bg-gold-50 text-gold-700'
           }`}
         >
           {declined ? (
@@ -1002,7 +1121,7 @@ function RequestCard({ request, isAdviser, busy, onDecide }) {
       </dl>
 
       {/* Who is on the other side of this request. */}
-      <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs font-medium text-slate-500">
+      <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs font-medium text-ink-500">
         {isAdviser ? (
           <>
             {request.requester_name ? (
@@ -1040,10 +1159,10 @@ function RequestCard({ request, isAdviser, busy, onDecide }) {
       {/* ------------------------------------------------ the decision --- */}
       {isAdviser && request.status === 'pending' ? (
         declining ? (
-          <div className="mt-4 border-t border-slate-100 pt-4">
+          <div className="mt-4 border-t border-ink-100 pt-4">
             <label
               htmlFor={`decline-${request.id}`}
-              className="text-xs font-bold uppercase tracking-wide text-slate-600"
+              className="text-xs font-bold uppercase tracking-wide text-ink-600"
             >
               Why are you declining?
             </label>
@@ -1053,7 +1172,7 @@ function RequestCard({ request, isAdviser, busy, onDecide }) {
               value={reason}
               onChange={(event) => setReason(event.target.value)}
               placeholder="e.g. I have a class then - try Thursday afternoon."
-              className="mt-1.5 w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm text-slate-900 transition placeholder:text-slate-400 focus:border-brand-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-brand-500/10"
+              className="mt-1.5 w-full rounded-xl border border-ink-200 bg-ink-50 px-3.5 py-2.5 text-sm text-ink-900 transition placeholder:text-ink-400 focus:border-brand-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-brand-500/10"
             />
             <div className="mt-3 flex flex-wrap justify-end gap-2.5">
               <button
@@ -1062,7 +1181,7 @@ function RequestCard({ request, isAdviser, busy, onDecide }) {
                   setDeclining(false);
                   setReason('');
                 }}
-                className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-bold text-slate-700 transition hover:bg-slate-50"
+                className="rounded-xl border border-ink-200 px-4 py-2.5 text-sm font-bold text-ink-700 transition hover:bg-ink-50"
               >
                 Back
               </button>
@@ -1082,12 +1201,12 @@ function RequestCard({ request, isAdviser, busy, onDecide }) {
             </div>
           </div>
         ) : (
-          <div className="mt-4 flex flex-wrap justify-end gap-2.5 border-t border-slate-100 pt-4">
+          <div className="mt-4 flex flex-wrap justify-end gap-2.5 border-t border-ink-100 pt-4">
             <button
               type="button"
               disabled={busy}
               onClick={() => setDeclining(true)}
-              className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-bold text-slate-700 transition hover:border-rose-200 hover:text-rose-700 disabled:opacity-60"
+              className="rounded-xl border border-ink-200 px-4 py-2.5 text-sm font-bold text-ink-700 transition hover:border-rose-200 hover:text-rose-700 disabled:opacity-60"
             >
               Decline
             </button>
@@ -1115,12 +1234,12 @@ function RequestsView({ loading, isAdviser, requests, busyRequestId, onDecide, o
   const pending = requests.filter((request) => request.status === 'pending').length;
 
   return (
-    <div>
+    <div className="animate-rise">
       <div className="mb-6">
-        <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">
+        <h1 className="text-2xl font-extrabold tracking-tight text-ink-900">
           {isAdviser ? 'Consultation requests' : 'My requests'}
         </h1>
-        <p className="mt-1 text-sm text-slate-500">
+        <p className="mt-1 text-sm text-ink-500">
           {isAdviser
             ? `${pending} ${pending === 1 ? 'request is' : 'requests are'} waiting for your approval. Nothing is on your schedule until you approve it.`
             : 'Requests you have sent. Your adviser has to approve one before it becomes an official session.'}
@@ -1130,18 +1249,18 @@ function RequestsView({ loading, isAdviser, requests, busyRequestId, onDecide, o
       {loading ? (
         <div className="space-y-4">
           {[0, 1].map((key) => (
-            <div key={key} className="h-56 animate-pulse rounded-2xl bg-slate-200/70" />
+            <div key={key} className="h-56 skeleton rounded-2xl" />
           ))}
         </div>
       ) : requests.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-12 text-center">
-          <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-100">
-            <Inbox className="h-7 w-7 text-slate-400" aria-hidden="true" />
+        <div className="rounded-2xl border border-dashed border-ink-300 bg-white px-6 py-12 text-center">
+          <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-ink-100">
+            <Inbox className="h-7 w-7 text-ink-400" aria-hidden="true" />
           </span>
-          <p className="mt-4 font-bold text-slate-900">
+          <p className="mt-4 font-bold text-ink-900">
             {isAdviser ? 'No requests waiting' : 'No pending requests'}
           </p>
-          <p className="mt-1 text-sm text-slate-500">
+          <p className="mt-1 text-sm text-ink-500">
             {isAdviser
               ? 'When a group from your department books you, it lands here for approval.'
               : 'Every request you sent has been answered.'}
@@ -1178,9 +1297,9 @@ function RequestsView({ loading, isAdviser, requests, busyRequestId, onDecide, o
 
 function MilestonePanel({ progress }) {
   return (
-    <section className="rounded-2xl bg-white p-6 shadow-card ring-1 ring-slate-100">
+    <section className="animate-rise rounded-2xl bg-white p-6 shadow-card ring-1 ring-ink-100">
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-base font-extrabold tracking-tight text-slate-900">
+        <h2 className="text-base font-extrabold tracking-tight text-ink-900">
           Capstone milestones
         </h2>
         <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700">
@@ -1189,7 +1308,7 @@ function MilestonePanel({ progress }) {
       </div>
 
       <div
-        className="mt-4 h-2 w-full overflow-hidden rounded-full bg-slate-100"
+        className="mt-4 h-2 w-full overflow-hidden rounded-full bg-ink-100"
         role="progressbar"
         aria-valuenow={progress}
         aria-valuemin={0}
@@ -1213,13 +1332,13 @@ function MilestonePanel({ progress }) {
                   <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-500" aria-hidden="true" />
                 ) : (
                   <Circle
-                    className={`h-5 w-5 shrink-0 ${current ? 'text-brand-600' : 'text-slate-300'}`}
+                    className={`h-5 w-5 shrink-0 ${current ? 'text-brand-600' : 'text-ink-300'}`}
                     aria-hidden="true"
                   />
                 )}
                 {index < MILESTONES.length - 1 ? (
                   <span
-                    className={`my-0.5 w-0.5 flex-1 rounded-full ${done ? 'bg-emerald-200' : 'bg-slate-200'}`}
+                    className={`my-0.5 w-0.5 flex-1 rounded-full ${done ? 'bg-emerald-200' : 'bg-ink-200'}`}
                   />
                 ) : null}
               </div>
@@ -1227,15 +1346,15 @@ function MilestonePanel({ progress }) {
                 <p
                   className={`text-sm ${
                     done
-                      ? 'font-semibold text-slate-700'
+                      ? 'font-semibold text-ink-700'
                       : current
                         ? 'font-bold text-brand-700'
-                        : 'font-medium text-slate-400'
+                        : 'font-medium text-ink-400'
                   }`}
                 >
                   {milestone}
                 </p>
-                <p className="text-xs text-slate-400">
+                <p className="text-xs text-ink-400">
                   {done ? 'Completed' : current ? 'In progress' : 'Not started'}
                 </p>
               </div>
@@ -1248,12 +1367,12 @@ function MilestonePanel({ progress }) {
 }
 
 function SchedulePanel({ schedule, loading, onBook }) {
-  if (loading) return <div className="h-64 animate-pulse rounded-2xl bg-slate-200/70" />;
+  if (loading) return <div className="h-64 skeleton rounded-2xl" />;
 
   return (
-    <section className="rounded-2xl bg-white p-6 shadow-card ring-1 ring-slate-100">
+    <section className="animate-rise rounded-2xl bg-white p-6 shadow-card ring-1 ring-ink-100">
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-base font-extrabold tracking-tight text-slate-900">Your schedule</h2>
+        <h2 className="text-base font-extrabold tracking-tight text-ink-900">Your schedule</h2>
         <button
           type="button"
           onClick={onBook}
@@ -1264,7 +1383,7 @@ function SchedulePanel({ schedule, loading, onBook }) {
       </div>
 
       {schedule.length === 0 ? (
-        <p className="mt-4 text-sm text-slate-500">
+        <p className="mt-4 text-sm text-ink-500">
           No sessions booked with you yet. Students pick you from the adviser list when they book.
         </p>
       ) : (
@@ -1280,8 +1399,8 @@ function SchedulePanel({ schedule, loading, onBook }) {
                   <span className="text-base font-extrabold text-brand-800">{when.getDate()}</span>
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-bold text-slate-900">{item.topic}</p>
-                  <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-slate-500">
+                  <p className="truncate text-sm font-bold text-ink-900">{item.topic}</p>
+                  <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-ink-500">
                     <span className="font-semibold">{timeFormatter.format(when)}</span>
                     {item.group_name ? <span className="truncate">{item.group_name}</span> : null}
                   </p>
@@ -1296,17 +1415,17 @@ function SchedulePanel({ schedule, loading, onBook }) {
 }
 
 function AdviserPanel({ consultation, loading }) {
-  if (loading) return <div className="h-40 animate-pulse rounded-2xl bg-slate-200/70" />;
+  if (loading) return <div className="h-40 skeleton rounded-2xl" />;
 
   return (
-    <section className="rounded-2xl bg-white p-6 shadow-card ring-1 ring-slate-100">
-      <h2 className="text-base font-extrabold tracking-tight text-slate-900">Your adviser</h2>
+    <section className="animate-rise rounded-2xl bg-white p-6 shadow-card ring-1 ring-ink-100">
+      <h2 className="text-base font-extrabold tracking-tight text-ink-900">Your adviser</h2>
 
       {consultation?.adviser_name ? (
         <div className="mt-4 flex items-center gap-3.5">
           <Avatar name={consultation.adviser_name} size="lg" />
           <div className="min-w-0">
-            <p className="truncate font-bold text-slate-900">{consultation.adviser_name}</p>
+            <p className="truncate font-bold text-ink-900">{consultation.adviser_name}</p>
             {consultation.adviser_email ? (
               <a
                 href={`mailto:${consultation.adviser_email}`}
@@ -1317,14 +1436,14 @@ function AdviserPanel({ consultation, loading }) {
               </a>
             ) : null}
             {consultation.group_name ? (
-              <p className="mt-1 text-xs text-slate-400">{consultation.group_name}</p>
+              <p className="mt-1 text-xs text-ink-400">{consultation.group_name}</p>
             ) : null}
           </div>
         </div>
       ) : (
-        <div className="mt-4 flex items-center gap-3.5 text-sm text-slate-500">
-          <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-slate-100">
-            <User className="h-6 w-6 text-slate-400" aria-hidden="true" />
+        <div className="mt-4 flex items-center gap-3.5 text-sm text-ink-500">
+          <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-ink-100">
+            <User className="h-6 w-6 text-ink-400" aria-hidden="true" />
           </span>
           <p>Your adviser appears here once a consultation is scheduled.</p>
         </div>
@@ -1337,11 +1456,11 @@ function AdviserPanel({ consultation, loading }) {
 
 function TasksView({ loading, tasks, totalCount, query, onQueryChange, busyTaskId, onResolve }) {
   return (
-    <div>
+    <div className="animate-rise">
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">Action items</h1>
-          <p className="mt-1 text-sm text-slate-500">
+          <h1 className="text-2xl font-extrabold tracking-tight text-ink-900">Action items</h1>
+          <p className="mt-1 text-sm text-ink-500">
             {query
               ? `${tasks.length} of ${totalCount} open ${totalCount === 1 ? 'task' : 'tasks'} match "${query}".`
               : `${totalCount} open ${totalCount === 1 ? 'task' : 'tasks'} from your consultations.`}
@@ -1351,7 +1470,7 @@ function TasksView({ loading, tasks, totalCount, query, onQueryChange, busyTaskI
           <button
             type="button"
             onClick={() => onQueryChange('')}
-            className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-50"
+            className="flex items-center gap-1.5 rounded-xl border border-ink-200 bg-white px-3 py-2 text-sm font-semibold text-ink-600 transition hover:bg-ink-50"
           >
             <X className="h-4 w-4" aria-hidden="true" />
             Clear "{query}"
@@ -1362,15 +1481,15 @@ function TasksView({ loading, tasks, totalCount, query, onQueryChange, busyTaskI
       {loading ? (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {[0, 1, 2].map((key) => (
-            <div key={key} className="h-32 animate-pulse rounded-2xl bg-slate-200/70" />
+            <div key={key} className="h-32 skeleton rounded-2xl" />
           ))}
         </div>
       ) : tasks.length === 0 ? (
         query ? (
-          <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-12 text-center">
-            <Search className="mx-auto h-9 w-9 text-slate-300" aria-hidden="true" />
-            <p className="mt-3 font-bold text-slate-900">No match for "{query}"</p>
-            <p className="mt-1 text-sm text-slate-500">Try a different word.</p>
+          <div className="rounded-2xl border border-dashed border-ink-300 bg-white px-6 py-12 text-center">
+            <Search className="mx-auto h-9 w-9 text-ink-300" aria-hidden="true" />
+            <p className="mt-3 font-bold text-ink-900">No match for "{query}"</p>
+            <p className="mt-1 text-sm text-ink-500">Try a different word.</p>
           </div>
         ) : (
           <EmptyTasks />
@@ -1393,12 +1512,12 @@ function TasksView({ loading, tasks, totalCount, query, onQueryChange, busyTaskI
 
 function EmptyTasks() {
   return (
-    <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-12 text-center">
+    <div className="rounded-2xl border border-dashed border-ink-300 bg-white px-6 py-12 text-center">
       <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-50">
         <CheckCircle2 className="h-7 w-7 text-emerald-500" aria-hidden="true" />
       </span>
-      <p className="mt-4 font-bold text-slate-900">Nothing pending</p>
-      <p className="mt-1 text-sm text-slate-500">
+      <p className="mt-4 font-bold text-ink-900">Nothing pending</p>
+      <p className="mt-1 text-sm text-ink-500">
         Every action item from your consultations is resolved.
       </p>
     </div>
@@ -1409,14 +1528,14 @@ function TaskCard({ task, busy, onResolve }) {
   const due = task.consultation_date ? new Date(task.consultation_date) : null;
 
   return (
-    <article className="flex flex-col rounded-2xl bg-white p-5 shadow-card ring-1 ring-slate-100 transition hover:-translate-y-0.5 hover:ring-brand-200">
+    <article className="animate-rise flex flex-col rounded-2xl bg-white p-5 shadow-card ring-1 ring-ink-100 transition duration-300 hover:-translate-y-1 hover:shadow-raised hover:ring-brand-200">
       <div className="flex items-start gap-3">
         <button
           type="button"
           onClick={onResolve}
           disabled={busy}
           aria-label={`Mark "${task.task_description}" as resolved`}
-          className="mt-0.5 shrink-0 rounded-full text-slate-300 transition hover:text-brand-700 disabled:opacity-50"
+          className="mt-0.5 shrink-0 rounded-full text-ink-300 transition hover:scale-110 hover:text-brand-700 disabled:opacity-50"
         >
           {busy ? (
             <CheckCircle2 className="h-5 w-5 animate-pulse text-brand-700" aria-hidden="true" />
@@ -1424,18 +1543,18 @@ function TaskCard({ task, busy, onResolve }) {
             <Circle className="h-5 w-5" aria-hidden="true" />
           )}
         </button>
-        <p className="flex-1 text-sm font-semibold leading-snug text-slate-900">
+        <p className="flex-1 text-sm font-semibold leading-snug text-ink-900">
           {task.task_description}
         </p>
       </div>
 
       {task.consultation_topic ? (
-        <span className="mt-3 w-fit max-w-full truncate rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-600">
+        <span className="mt-3 w-fit max-w-full truncate rounded-full bg-ink-100 px-2.5 py-1 text-[11px] font-bold text-ink-600">
           {task.consultation_topic}
         </span>
       ) : null}
 
-      <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-slate-100 pt-3 text-xs font-medium text-slate-500">
+      <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-ink-100 pt-3 text-xs font-medium text-ink-500">
         {due ? (
           <span className="flex items-center gap-1">
             <CalendarDays className="h-3.5 w-3.5" aria-hidden="true" />
@@ -1470,11 +1589,11 @@ function ProfileView({ profile, onSignOut }) {
   ].filter(([, value]) => Boolean(value));
 
   return (
-    <div className="max-w-3xl">
-      <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">My profile</h1>
-      <p className="mt-1 text-sm text-slate-500">The details you registered with.</p>
+    <div className="animate-rise max-w-3xl">
+      <h1 className="text-2xl font-extrabold tracking-tight text-ink-900">My profile</h1>
+      <p className="mt-1 text-sm text-ink-500">The details you registered with.</p>
 
-      <section className="mt-6 overflow-hidden rounded-2xl bg-white shadow-card ring-1 ring-slate-100">
+      <section className="mt-6 overflow-hidden rounded-2xl bg-white shadow-card ring-1 ring-ink-100">
         <div className="flex flex-wrap items-center gap-4 bg-gradient-to-br from-brand-700 to-brand-900 px-6 py-7">
           <Avatar name={profile.full_name || profile.email} size="lg" />
           <div className="min-w-0">
@@ -1508,14 +1627,14 @@ function ProfileView({ profile, onSignOut }) {
           </div>
         </div>
 
-        <dl className="divide-y divide-slate-100">
+        <dl className="divide-y divide-ink-100">
           {rows.map(([label, value, capitalized]) => (
             <div key={label} className="flex flex-wrap gap-2 px-6 py-4">
-              <dt className="w-40 text-xs font-bold uppercase tracking-wide text-slate-400">
+              <dt className="w-40 text-xs font-bold uppercase tracking-wide text-ink-400">
                 {label}
               </dt>
               <dd
-                className={`flex-1 break-all text-sm font-semibold text-slate-800 ${
+                className={`flex-1 break-all text-sm font-semibold text-ink-800 ${
                   capitalized ? 'capitalize' : ''
                 }`}
               >
@@ -1529,7 +1648,7 @@ function ProfileView({ profile, onSignOut }) {
       <button
         type="button"
         onClick={onSignOut}
-        className="mt-6 inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 transition hover:border-brand-200 hover:text-brand-700"
+        className="mt-6 inline-flex items-center gap-2 rounded-xl border border-ink-200 bg-white px-4 py-2.5 text-sm font-bold text-ink-700 transition hover:border-brand-200 hover:text-brand-700"
       >
         <LogOut className="h-4 w-4" aria-hidden="true" />
         Sign out

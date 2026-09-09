@@ -291,7 +291,7 @@ export default function AuthScreen({ onAuthenticated }) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-canvas px-4 py-6 sm:px-6 lg:py-10">
       <div className={`w-full transition-all duration-300 ${wide ? 'max-w-6xl' : 'max-w-5xl'}`}>
-        <div className="overflow-hidden rounded-3xl bg-white shadow-lift ring-1 ring-slate-900/5">
+        <div className="animate-rise overflow-hidden rounded-3xl bg-white shadow-lift ring-1 ring-ink-900/5">
           <div className="grid lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1fr)]">
             <BrandPanel view={view} />
 
@@ -340,7 +340,7 @@ export default function AuthScreen({ onAuthenticated }) {
 
                   <Divider />
 
-                  <p className="text-center text-sm text-slate-500">
+                  <p className="text-center text-sm text-ink-500">
                     No account yet?{' '}
                     <button type="button" onClick={() => switchView('email')} className={LINK}>
                       Create one
@@ -389,7 +389,7 @@ export default function AuthScreen({ onAuthenticated }) {
                           : 'Student address - this creates a student account.'}
                       </p>
                     ) : (
-                      <p className="mt-2 flex items-start gap-1.5 text-xs text-slate-500">
+                      <p className="mt-2 flex items-start gap-1.5 text-xs text-ink-500">
                         <ShieldCheck
                           className="mt-px h-3.5 w-3.5 shrink-0 text-brand-600"
                           aria-hidden="true"
@@ -397,7 +397,7 @@ export default function AuthScreen({ onAuthenticated }) {
                         {HAU_EMAIL_HINT}
                       </p>
                     )}
-                    <p className="mt-2 text-xs text-slate-400">
+                    <p className="mt-2 text-xs text-ink-400">
                       Students use @student.hau.edu.ph; advisers use their @hau.edu.ph faculty
                       address.
                     </p>
@@ -409,7 +409,7 @@ export default function AuthScreen({ onAuthenticated }) {
 
                   <Divider />
 
-                  <p className="text-center text-sm text-slate-500">
+                  <p className="text-center text-sm text-ink-500">
                     Already registered?{' '}
                     <button type="button" onClick={() => switchView('login')} className={LINK}>
                       Sign in
@@ -424,8 +424,8 @@ export default function AuthScreen({ onAuthenticated }) {
                   <BackLink onClick={() => switchView('email')}>Use a different email</BackLink>
 
                   <FormHeading eyebrow="Step 2 of 3" title="Enter your access code" />
-                  <p className="mt-2 text-sm text-slate-500">
-                    Sent to <span className="font-semibold text-slate-800">{email}</span>. The code
+                  <p className="mt-2 text-sm text-ink-500">
+                    Sent to <span className="font-semibold text-ink-800">{email}</span>. The code
                     expires in 10 minutes.
                   </p>
 
@@ -451,8 +451,8 @@ export default function AuthScreen({ onAuthenticated }) {
                         onChange={(event) => handleDigitChange(index, event.target.value)}
                         onKeyDown={(event) => handleDigitKeyDown(index, event)}
                         onFocus={(event) => event.target.select()}
-                        className={`h-16 w-full rounded-2xl border-2 text-center text-2xl font-bold text-slate-900 transition focus:border-brand-600 focus:bg-white focus:outline-none disabled:opacity-60 ${
-                          digit ? 'border-brand-500 bg-white' : 'border-slate-200 bg-slate-50'
+                        className={`h-16 w-full rounded-2xl border-2 text-center text-2xl font-bold text-ink-900 transition focus:border-brand-600 focus:bg-white focus:outline-none disabled:opacity-60 ${
+                          digit ? 'border-brand-500 bg-white' : 'border-ink-200 bg-ink-50'
                         }`}
                       />
                     ))}
@@ -487,10 +487,10 @@ export default function AuthScreen({ onAuthenticated }) {
 
                   <Divider />
 
-                  <p className="text-center text-sm text-slate-500">
+                  <p className="text-center text-sm text-ink-500">
                     Did not get it?{' '}
                     {cooldown > 0 ? (
-                      <span className="font-semibold text-slate-400">Resend in {cooldown}s</span>
+                      <span className="font-semibold text-ink-400">Resend in {cooldown}s</span>
                     ) : (
                       <button type="button" onClick={resendCode} disabled={busy} className={LINK}>
                         Resend code
@@ -504,7 +504,7 @@ export default function AuthScreen({ onAuthenticated }) {
               {view === 'details' ? (
                 <form onSubmit={handleDetails} noValidate>
                   <FormHeading eyebrow="Step 3 of 3" title="Complete your profile" />
-                  <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-slate-500">
+                  <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-ink-500">
                     <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700">
                       <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
                       {email} verified
@@ -677,7 +677,7 @@ export default function AuthScreen({ onAuthenticated }) {
                             disabled={!details.department}
                             value={details.course}
                             onChange={(event) => updateDetail('course', event.target.value)}
-                            className={`${INPUT} disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400`}
+                            className={`${INPUT} disabled:cursor-not-allowed disabled:bg-ink-100 disabled:text-ink-400`}
                           >
                             <option value="">
                               {details.department ? 'Select course' : 'Pick a department first'}
@@ -705,7 +705,7 @@ export default function AuthScreen({ onAuthenticated }) {
                         visible={showPassword}
                         onToggle={() => setShowPassword((v) => !v)}
                       />
-                      <p className="mt-1.5 text-xs text-slate-400">
+                      <p className="mt-1.5 text-xs text-ink-400">
                         At least {MIN_PASSWORD} characters.
                       </p>
                     </Field>
@@ -732,7 +732,7 @@ export default function AuthScreen({ onAuthenticated }) {
         </div>
 
         {view === 'email' || view === 'verify' ? (
-          <p className="mt-5 text-center text-xs text-slate-400">
+          <p className="mt-5 text-center text-xs text-ink-400">
             Check your spam folder if the code does not arrive within a minute.
           </p>
         ) : null}
@@ -746,8 +746,8 @@ export default function AuthScreen({ onAuthenticated }) {
 const HIGHLIGHTS = [
   {
     icon: CalendarCheck,
-    title: 'Book in seconds',
-    body: 'Request a slot with your adviser and see it confirmed on your dashboard.',
+    title: 'Book an open slot',
+    body: 'Advisers publish their consultation hours; you pick a time that already works.',
   },
   {
     icon: ClipboardList,
@@ -770,7 +770,7 @@ function BrandPanel({ view }) {
         aria-hidden="true"
       />
       <div
-        className="pointer-events-none absolute -bottom-24 -left-16 h-72 w-72 rounded-full bg-amber-400/20 blur-3xl"
+        className="pointer-events-none absolute -bottom-24 -left-16 h-72 w-72 rounded-full bg-gold-400/20 blur-3xl"
         aria-hidden="true"
       />
       <div
@@ -816,10 +816,11 @@ function BrandPanel({ view }) {
       </div>
 
       <ul className="relative mt-10 space-y-4">
-        {HIGHLIGHTS.map(({ icon: Icon, title, body }) => (
+        {HIGHLIGHTS.map(({ icon: Icon, title, body }, index) => (
           <li
             key={title}
-            className="flex gap-3 rounded-2xl bg-white/10 p-4 ring-1 ring-white/15 backdrop-blur-sm"
+            style={{ '--delay': `${180 + index * 90}ms` }}
+            className="animate-rise flex gap-3 rounded-2xl bg-white/10 p-4 ring-1 ring-white/15 backdrop-blur-sm transition hover:bg-white/15"
           >
             <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/15 text-white">
               <Icon className="h-4 w-4" aria-hidden="true" />
@@ -846,8 +847,8 @@ function MobileBrandBar() {
         <GraduationCap className="h-6 w-6 text-white" aria-hidden="true" />
       </div>
       <div>
-        <p className="font-extrabold tracking-tight text-slate-900">ConsultTrack</p>
-        <p className="text-xs font-medium text-slate-500">Holy Angel University</p>
+        <p className="font-extrabold tracking-tight text-ink-900">ConsultTrack</p>
+        <p className="text-xs font-medium text-ink-500">Holy Angel University</p>
       </div>
     </div>
   );
@@ -856,7 +857,7 @@ function MobileBrandBar() {
 /* ----------------------------------------------------------- small pieces -- */
 
 const INPUT =
-  'w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3 text-sm text-slate-900 transition placeholder:text-slate-400 focus:border-brand-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-brand-500/10';
+  'w-full rounded-xl border border-ink-200 bg-ink-50 px-3.5 py-3 text-sm text-ink-900 transition placeholder:text-ink-400 focus:border-brand-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-brand-500/10';
 
 const BUTTON =
   'mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-brand-700 to-brand-600 px-4 py-3.5 text-sm font-bold text-white shadow-lg shadow-brand-900/20 transition hover:from-brand-800 hover:to-brand-700 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none';
@@ -879,7 +880,7 @@ function Steps({ view }) {
             className={
               index <= current
                 ? 'flex items-center gap-2 font-bold text-brand-700'
-                : 'flex items-center gap-2 font-medium text-slate-400'
+                : 'flex items-center gap-2 font-medium text-ink-400'
             }
           >
             <StepBullet state={index < current ? 'done' : index === current ? 'current' : 'todo'}>
@@ -889,7 +890,7 @@ function Steps({ view }) {
           </span>
           {index < STEP_LABELS.length - 1 ? (
             <span
-              className={`h-0.5 flex-1 rounded-full ${index < current ? 'bg-brand-700' : 'bg-slate-200'}`}
+              className={`h-0.5 flex-1 rounded-full ${index < current ? 'bg-brand-700' : 'bg-ink-200'}`}
             />
           ) : null}
         </li>
@@ -911,7 +912,7 @@ function StepBullet({ state, children }) {
       className={
         state === 'current'
           ? 'flex h-6 w-6 items-center justify-center rounded-full bg-brand-700 text-[10px] font-bold text-white ring-4 ring-brand-100'
-          : 'flex h-6 w-6 items-center justify-center rounded-full bg-slate-100 text-[10px] font-bold text-slate-400'
+          : 'flex h-6 w-6 items-center justify-center rounded-full bg-ink-100 text-[10px] font-bold text-ink-400'
       }
     >
       {children}
@@ -925,14 +926,14 @@ function FormHeading({ eyebrow, title, subtitle }) {
       {eyebrow ? (
         <p className="text-xs font-bold uppercase tracking-widest text-brand-600">{eyebrow}</p>
       ) : null}
-      <h2 className="mt-1.5 text-2xl font-extrabold tracking-tight text-slate-900">{title}</h2>
-      {subtitle ? <p className="mt-2 text-sm leading-relaxed text-slate-500">{subtitle}</p> : null}
+      <h2 className="mt-1.5 text-2xl font-extrabold tracking-tight text-ink-900">{title}</h2>
+      {subtitle ? <p className="mt-2 text-sm leading-relaxed text-ink-500">{subtitle}</p> : null}
     </div>
   );
 }
 
 function Divider() {
-  return <div className="my-6 h-px w-full bg-slate-100" />;
+  return <div className="my-6 h-px w-full bg-ink-100" />;
 }
 
 function BackLink({ onClick, children }) {
@@ -940,7 +941,7 @@ function BackLink({ onClick, children }) {
     <button
       type="button"
       onClick={onClick}
-      className="mb-6 inline-flex items-center gap-1.5 rounded-lg text-sm font-medium text-slate-500 transition hover:text-brand-700"
+      className="mb-6 inline-flex items-center gap-1.5 rounded-lg text-sm font-medium text-ink-500 transition hover:text-brand-700"
     >
       <ArrowLeft className="h-4 w-4" aria-hidden="true" />
       {children}
@@ -953,12 +954,12 @@ function Field({ label, htmlFor, icon: Icon, optional = false, className = '', c
     <div className={className}>
       <label
         htmlFor={htmlFor}
-        className="mb-1.5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-600"
+        className="mb-1.5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-ink-600"
       >
-        {Icon ? <Icon className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" /> : null}
+        {Icon ? <Icon className="h-3.5 w-3.5 text-ink-400" aria-hidden="true" /> : null}
         {label}
         {optional ? (
-          <span className="font-medium normal-case text-slate-400">(optional)</span>
+          <span className="font-medium normal-case text-ink-400">(optional)</span>
         ) : null}
       </label>
       {children}
@@ -969,8 +970,8 @@ function Field({ label, htmlFor, icon: Icon, optional = false, className = '', c
 function Legend({ children }) {
   return (
     <div className="mb-4 mt-8 flex items-center gap-3">
-      <p className="text-xs font-bold uppercase tracking-widest text-slate-400">{children}</p>
-      <span className="h-px flex-1 bg-slate-100" />
+      <p className="text-xs font-bold uppercase tracking-widest text-ink-400">{children}</p>
+      <span className="h-px flex-1 bg-ink-100" />
     </div>
   );
 }
@@ -991,7 +992,7 @@ function PasswordInput({ id, value, onChange, visible, onToggle, autoComplete })
         type="button"
         onClick={onToggle}
         aria-label={visible ? 'Hide password' : 'Show password'}
-        className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md text-slate-400 transition hover:text-slate-700"
+        className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md text-ink-400 transition hover:text-ink-700"
       >
         {visible ? (
           <EyeOff className="h-4 w-4" aria-hidden="true" />

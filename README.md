@@ -15,12 +15,16 @@ vercel.json                build config + /api/* rewrite
 client/                    Vite + React app
   src/components/AuthScreen.jsx
   src/components/Dashboard.jsx
-  src/components/BookingModal.jsx
+  src/components/BookingModal.jsx      booking form + slot picker
+  src/components/AvailabilityView.jsx  the adviser's consultation hours
   src/lib/api.js           fetch wrapper
   src/lib/session.js       localStorage session
+  src/lib/schedule.js      weekday / slot helpers
 supabase/migrations/
   0001_init.sql            schema, RLS, auth trigger
   0002_restrict_function_grants.sql
+  ...
+  0006_adviser_availability.sql        consultation hours
 ```
 
 ## 1. Database
@@ -113,6 +117,10 @@ development and no CORS round trip is needed.
 | GET | `/api/consultations/next` | Bearer | Soonest **approved** consultation |
 | GET | `/api/consultations/requests` | Bearer | Requests awaiting a decision |
 | GET | `/api/tasks/pending` | Bearer | Open action items |
+| GET | `/api/availability` | Bearer | The adviser's own published hours |
+| POST | `/api/availability` | Bearer | Publish a weekly block |
+| DELETE | `/api/availability/:id` | Bearer | Remove a block |
+| GET | `/api/advisers/:id/slots?date=` | Bearer | Open slots on a date, plus `taken` flags |
 | POST | `/api/consultations` | Bearer | Book (adviser) / request (student) |
 | PATCH | `/api/consultations/:id/decision` | Bearer | Adviser approves or declines |
 | PATCH | `/api/tasks/:id` | Bearer | Resolve / reopen a task |
@@ -132,8 +140,44 @@ up as an official session. Declining keeps the row as `declined` with the
 adviser's reason, which is how the group hears the answer. An adviser booking one
 of their own groups is `scheduled` immediately: they are the approver.
 
+Approval is still the adviser's call, but a request booked from published hours
+already lands on a time they said they were free, so approving is usually a
+formality rather than a negotiation.
+
 Notifications are in-app only (the bell, the sidebar badge and the request list).
 Nothing is emailed — see the placeholders below.
+
+### Consultation hours and slot booking
+
+An adviser publishes recurring weekly blocks under **Consultation hours** — say
+Wednesdays 1-4 PM in 30-minute slots, in Faculty Room 204. That block becomes six
+bookable times every Wednesday.
+
+A student opening the booking form then gets a slot picker instead of a bare time
+field: a row of the next dates that adviser actually holds hours on, and the
+slots for the chosen day. A slot another group already holds is shown struck out
+rather than hidden, so "why can't I get 2 PM" answers itself. Leaving the
+location blank fills in the room the block named.
+
+Two rules are enforced server-side in `POST /api/consultations`, not just in the
+picker:
+
+1. the time has to sit on a slot boundary inside a published block, and
+2. the slot must not already be held by a pending or scheduled session.
+
+The first is skipped for an adviser with no hours on file — they keep the old
+free-form booking, so nobody is locked out by a feature they have not set up. It
+is also skipped for an adviser booking their own session: consultation hours tell
+students when to ask, and an adviser is not asking anyone. The second always
+applies, which is what stops two groups landing on the same slot.
+
+Blocks are stored as wall-clock `time` values because a weekly block means the
+same campus hour every week, not a fixed UTC instant. `CAMPUS_TIMEZONE`
+(default `Asia/Manila`) is what turns a block plus a date into a real timestamp,
+and slot times are displayed in that zone rather than the browser's.
+
+Deleting a block does not touch sessions already booked out of it — those are
+real consultations now, not slots.
 
 ## Known placeholders
 
