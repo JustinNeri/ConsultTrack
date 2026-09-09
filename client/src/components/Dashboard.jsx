@@ -588,7 +588,9 @@ export default function Dashboard({ session, onSignOut, onProfileChanged }) {
           id: `requested-${request.id}`,
           at: request.created_at,
           icon: CalendarPlus,
-          tone: 'bg-info-50 text-info-600',
+          // A submitted request is waiting on a decision, and waiting is gold
+          // everywhere else in the app. It was the last blue left.
+          tone: 'bg-gold-50 text-gold-700',
           title: isAdviser ? 'New consultation request' : 'Consultation request submitted',
           detail: request.topic,
         });
@@ -1717,7 +1719,7 @@ function OverviewView({
             </StatCard>
 
             {isAdviser ? (
-              <StatCard icon={Users} tone="info" label="Groups booked" delay={120}>
+              <StatCard icon={Users} tone="brand" label="Groups booked" delay={120}>
                 <p className="tnum text-h1 font-bold tracking-tight text-ink-900">
                   {bookedGroups}
                 </p>
@@ -1728,7 +1730,7 @@ function OverviewView({
             ) : (
               <StatCard
                 icon={TrendingUp}
-                tone="success"
+                tone="brand"
                 label="Capstone progress"
                 delay={120}
                 action={{ label: 'View details', onClick: onSeeAllHistory }}
@@ -1928,27 +1930,53 @@ function OverviewView({
  * the difference between answering every guessed time and having students pick
  * from slots that already work -- but only if the adviser knows they exist.
  */
-function PublishHoursPrompt({ onSetHours }) {
+/*
+ * The banner shown when the app cannot do its job until someone finishes a
+ * setup step -- an adviser with no published hours, a student with no group.
+ * Both are the same object, so they are one component with one tint rather than
+ * two that drifted into gold and maroon.
+ *
+ * The layout is the part worth keeping. The first version was a single
+ * `flex flex-wrap` row in which the text had `min-w-0 flex-1`: that lets the
+ * copy shrink toward nothing while the 40px icon and the ~150px button refuse
+ * to give up a pixel, so on a phone the paragraph collapsed into a
+ * four-words-wide column and the wrap never fired, because nothing ever
+ * overflowed. Icon and text are now one unit that stacks above a full-width
+ * button, and the row only re-forms once there is room for one.
+ */
+function PromptBanner({ icon: Icon, title, body, action, onAction }) {
   return (
-    <section className="animate-rise flex flex-wrap items-center gap-4 rounded-2xl border border-gold-200 bg-gold-50/60 p-4">
-      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gold-100 text-gold-700">
-        <CalendarClock className="h-5 w-5" aria-hidden="true" />
-      </span>
-      <div className="min-w-0 flex-1">
-        <p className="text-h3 font-semibold text-ink-900">You have not published any hours</p>
-        <p className="mt-0.5 text-body text-ink-600">
-          Until you do, students are guessing a time and waiting to be declined.
-        </p>
+    <section className="animate-rise flex flex-col gap-4 rounded-2xl border border-brand-200 bg-brand-50/50 p-4 sm:flex-row sm:items-center">
+      <div className="flex min-w-0 flex-1 items-start gap-3.5">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand-100 text-brand-700">
+          <Icon className="h-5 w-5" aria-hidden="true" />
+        </span>
+        <div className="min-w-0">
+          <p className="text-h3 font-semibold text-ink-900">{title}</p>
+          <p className="mt-0.5 text-body text-ink-600">{body}</p>
+        </div>
       </div>
       <button
         type="button"
-        onClick={onSetHours}
-        className="inline-flex items-center gap-1.5 rounded-lg bg-brand-700 px-3.5 py-2 text-body font-semibold text-white transition hover:bg-brand-600"
+        onClick={onAction}
+        className="inline-flex w-full shrink-0 items-center justify-center gap-1.5 rounded-lg bg-brand-700 px-3.5 py-2 text-body font-semibold text-white transition hover:bg-brand-600 sm:w-auto"
       >
-        Set consultation hours
+        {action}
         <ArrowRight className="h-4 w-4" aria-hidden="true" />
       </button>
     </section>
+  );
+}
+
+function PublishHoursPrompt({ onSetHours }) {
+  return (
+    <PromptBanner
+      icon={CalendarClock}
+      title="You have not published any hours"
+      body="Until you do, students are guessing a time and waiting to be declined."
+      action="Set consultation hours"
+      onAction={onSetHours}
+    />
   );
 }
 
@@ -1960,26 +1988,13 @@ function PublishHoursPrompt({ onSetHours }) {
  */
 function JoinGroupPrompt({ onOpenGroup }) {
   return (
-    <section className="animate-rise flex flex-wrap items-center gap-4 rounded-2xl border border-brand-200 bg-brand-50/50 p-4">
-      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand-100 text-brand-700">
-        <Users2 className="h-5 w-5" aria-hidden="true" />
-      </span>
-      <div className="min-w-0 flex-1">
-        <p className="text-h3 font-semibold text-ink-900">You are not in a thesis group yet</p>
-        <p className="mt-0.5 text-body text-ink-600">
-          Create one or join with your leader&apos;s code. Consultations belong to the group, so
-          everything you book reaches your group mates too.
-        </p>
-      </div>
-      <button
-        type="button"
-        onClick={onOpenGroup}
-        className="inline-flex items-center gap-1.5 rounded-lg bg-brand-700 px-3.5 py-2 text-body font-semibold text-white transition hover:bg-brand-600"
-      >
-        Set up my group
-        <ArrowRight className="h-4 w-4" aria-hidden="true" />
-      </button>
-    </section>
+    <PromptBanner
+      icon={Users2}
+      title="You are not in a thesis group yet"
+      body="Create one or join with your leader's code. Consultations belong to the group, so everything you book reaches your group mates too."
+      action="Set up my group"
+      onAction={onOpenGroup}
+    />
   );
 }
 
@@ -2021,15 +2036,20 @@ function GreetingHeader({ displayName, isAdviser }) {
 /* ------------------------------------------------------------ stat cards -- */
 
 /*
- * The icon chip is the only colour on a card, and it carries the status --
- * so three cards are told apart by one small mark each rather than by three
- * competing backgrounds.
+ * The icon chip is the only colour on a card, so what it is allowed to say
+ * matters. `brand` is the default and means nothing beyond "this is ours";
+ * `success` and `warning` are claims about the data underneath and may only be
+ * used where that claim is true *right now*.
+ *
+ * Capstone progress used to be permanently `success`, which put a reassuring
+ * green tick beside a capstone that was 12% done -- a category wearing a
+ * status's colour. Groups booked was permanently `info` for the same reason.
+ * Both are `brand` now, and `info` had no honest use left.
  */
 const TONES = {
   brand: 'bg-brand-50 text-brand-700',
   success: 'bg-emerald-50 text-emerald-600',
   warning: 'bg-gold-50 text-gold-600',
-  info: 'bg-info-50 text-info-600',
 };
 
 function StatCard({ icon: Icon, tone, label, action, delay = 0, children }) {
@@ -2628,7 +2648,9 @@ function ConsultationCard({
           <button
             type="button"
             onClick={() => onWrapUp(consultation.id)}
-            className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-700 active:scale-[0.99]"
+            /* Green is reserved for approving something against a rose decline.
+               This button has no counterpart -- it is just the primary action. */
+            className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-brand-700 px-3.5 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-brand-600 active:scale-[0.99]"
           >
             <ClipboardList className="h-3.5 w-3.5" aria-hidden="true" />
             Wrap up
