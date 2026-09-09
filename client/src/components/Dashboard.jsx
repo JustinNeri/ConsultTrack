@@ -41,6 +41,7 @@ import ConsultationThread from './ConsultationThread.jsx';
 import CompleteSessionModal from './CompleteSessionModal.jsx';
 import HistoryView from './HistoryView.jsx';
 import RecordView from './RecordView.jsx';
+import ProposeTimeModal from './ProposeTimeModal.jsx';
 import { api } from '../lib/api.js';
 
 /**
@@ -118,6 +119,8 @@ export default function Dashboard({ session, onSignOut }) {
   // Which consultation's thread is open, and which one is being wrapped up.
   const [threadId, setThreadId] = useState(null);
   const [wrapUpId, setWrapUpId] = useState(null);
+  // The consultation whose time is being renegotiated.
+  const [proposeFor, setProposeFor] = useState(null);
   const [unread, setUnread] = useState({ total: 0, threads: [] });
   // Bumped to make the history view re-read itself after a wrap-up.
   const [historyKey, setHistoryKey] = useState(0);
@@ -235,6 +238,68 @@ export default function Dashboard({ session, onSignOut }) {
     }
   }
 
+  /**
+   * Answering a counter-offer. Accepting is the only thing that actually moves
+   * a consultation, so the whole dashboard is reloaded rather than patched --
+   * the upcoming session, the schedule and the inbox all change at once.
+   */
+  async function decideProposal(item, decision) {
+    if (busyRequestId) return;
+    setBusyRequestId(item.id);
+    setError('');
+    setNotice('');
+
+    try {
+      await api(`/consultations/${item.id}/proposal`, {
+        method: 'PATCH',
+        token,
+        body: { decision },
+      });
+      setNotice(
+        decision === 'accepted'
+          ? 'Time confirmed - the session is on the schedule.'
+          : item.status === 'pending'
+            ? 'Request closed. You can book another slot whenever you are ready.'
+            : 'Declined - the original time still stands.',
+      );
+      await loadDashboard({ silent: true });
+    } catch (err) {
+      if (err.status === 401) {
+        onSignOut();
+        return;
+      }
+      setError(err.message);
+    } finally {
+      setBusyRequestId(null);
+    }
+  }
+
+  /** Either side calling a consultation off. */
+  async function cancelConsultation(item, reason) {
+    if (busyRequestId) return;
+    setBusyRequestId(item.id);
+    setError('');
+    setNotice('');
+
+    try {
+      await api(`/consultations/${item.id}/cancel`, {
+        method: 'PATCH',
+        token,
+        body: { reason },
+      });
+      setNotice('Cancelled. The other side can see your reason.');
+      await loadDashboard({ silent: true });
+    } catch (err) {
+      if (err.status === 401) {
+        onSignOut();
+        return;
+      }
+      setError(err.message);
+    } finally {
+      setBusyRequestId(null);
+    }
+  }
+
   /* Typing in the header search jumps to the list it filters. */
   function handleSearch(value) {
     setQuery(value);
@@ -259,8 +324,11 @@ export default function Dashboard({ session, onSignOut }) {
   // The bell counts what actually needs someone's attention: for an adviser the
   // requests they have not answered, for a student the answers they have not
   // seen yet (a decline stays in the list for a fortnight).
+  // `needs_you` is the server's answer to "whose move is it": an adviser who
+  // has already counter-offered is waiting on the group, so the request leaves
+  // their count rather than nagging them about their own offer.
   const pendingRequests = useMemo(
-    () => requests.filter((request) => request.status === 'pending'),
+    () => requests.filter((request) => request.needs_you),
     [requests],
   );
   const noticeCount = isAdviser ? pendingRequests.length : requests.length;
@@ -374,6 +442,10 @@ export default function Dashboard({ session, onSignOut }) {
                 unreadByConsultation={unreadByConsultation}
                 onOpenThread={setThreadId}
                 onWrapUp={setWrapUpId}
+                myId={profile.id}
+                onDecideProposal={decideProposal}
+                onPropose={setProposeFor}
+                onCancel={cancelConsultation}
               />
             ) : null}
 
@@ -387,6 +459,10 @@ export default function Dashboard({ session, onSignOut }) {
                 onBook={() => setBookingOpen(true)}
                 unreadByConsultation={unreadByConsultation}
                 onOpenThread={setThreadId}
+                myId={profile.id}
+                onDecideProposal={decideProposal}
+                onPropose={setProposeFor}
+                onCancelRequest={cancelConsultation}
               />
             ) : null}
 
@@ -457,6 +533,25 @@ export default function Dashboard({ session, onSignOut }) {
             // The session leaves the upcoming schedule and the new action items
             // arrive, so both the dashboard and the history list are now stale.
             setHistoryKey((key) => key + 1);
+            loadDashboard({ silent: true });
+          }}
+        />
+      ) : null}
+
+      {proposeFor ? (
+        <ProposeTimeModal
+          token={token}
+          consultation={proposeFor}
+          isAdviser={isAdviser}
+          onClose={() => setProposeFor(null)}
+          onProposed={() => {
+            setProposeFor(null);
+            setError('');
+            setNotice(
+              isAdviser
+                ? 'Offer sent. The slot is held until the group answers.'
+                : 'Sent. Your adviser has to accept before the session moves.',
+            );
             loadDashboard({ silent: true });
           }}
         />
@@ -777,6 +872,10 @@ function OverviewView({
   unreadByConsultation,
   onOpenThread,
   onWrapUp,
+  myId,
+  onDecideProposal,
+  onPropose,
+  onCancel,
 }) {
   const meetingDate = consultation ? new Date(consultation.meeting_date) : null;
   const daysAway = meetingDate
@@ -894,6 +993,10 @@ function OverviewView({
                     isAdviser={isAdviser}
                     busy={busyRequestId === request.id}
                     onDecide={onDecide}
+                    myId={myId}
+                    onDecideProposal={onDecideProposal}
+                    onPropose={onPropose}
+                    onCancel={onCancel}
                     unread={unreadByConsultation?.[request.id] ?? 0}
                     onOpenThread={onOpenThread}
                   />
@@ -915,6 +1018,10 @@ function OverviewView({
                 unread={unreadByConsultation?.[consultation?.id] ?? 0}
                 onOpenThread={onOpenThread}
                 onWrapUp={onWrapUp}
+                myId={myId}
+                onDecideProposal={onDecideProposal}
+                onPropose={onPropose}
+                onCancel={onCancel}
               />
             )}
           </section>
@@ -1161,7 +1268,14 @@ function ConsultationCard({
   unread = 0,
   onOpenThread,
   onWrapUp,
+  myId,
+  onDecideProposal,
+  onPropose,
+  onCancel,
 }) {
+  // Declared before the early return below: hooks cannot sit behind a branch.
+  const [cancelling, setCancelling] = useState(false);
+
   if (!consultation) {
     return (
       <div className="rounded-2xl border border-dashed border-ink-300 bg-white px-6 py-12 text-center shadow-card">
@@ -1214,8 +1328,57 @@ function ConsultationCard({
         />
       </dl>
 
-      <div className="mt-4 flex flex-wrap items-center gap-2.5 border-t border-ink-100 pt-4">
+      {/* A move somebody has asked for, but which has not happened yet -- the
+          card still shows the agreed time above, because that is still the plan
+          until the other side accepts. */}
+      {consultation.proposal_live ? (
+        <ProposalBanner
+          item={consultation}
+          myId={myId}
+          busy={false}
+          onDecide={onDecideProposal}
+        />
+      ) : null}
+
+      {cancelling ? (
+        <InlineReason
+          id={`cancel-session-${consultation.id}`}
+          label={isAdviser ? 'Why are you calling this off?' : 'Why are you cancelling?'}
+          placeholder="e.g. A faculty meeting was moved onto that slot."
+          confirmLabel="Call it off"
+          tone="ink"
+          busy={false}
+          onCancel={() => setCancelling(false)}
+          onConfirm={(reason) => {
+            setCancelling(false);
+            onCancel(consultation, reason);
+          }}
+        />
+      ) : (
+        <div className="mt-4 flex flex-wrap items-center gap-2.5 border-t border-ink-100 pt-4">
         <ThreadButton unread={unread} onClick={() => onOpenThread(consultation.id)} />
+
+        {!consultation.proposal_live ? (
+          <>
+            <button
+              type="button"
+              onClick={() => onPropose(consultation)}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-ink-200 px-3.5 py-2 text-xs font-bold text-ink-700 transition hover:border-gold-300 hover:bg-gold-50 hover:text-gold-800"
+            >
+              <CalendarClock className="h-3.5 w-3.5" aria-hidden="true" />
+              Move
+            </button>
+            <button
+              type="button"
+              onClick={() => setCancelling(true)}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-ink-200 px-3.5 py-2 text-xs font-bold text-ink-700 transition hover:border-rose-200 hover:text-rose-700"
+            >
+              <X className="h-3.5 w-3.5" aria-hidden="true" />
+              Cancel
+            </button>
+          </>
+        ) : null}
+
         {/* The adviser ran the session, so the adviser closes it. */}
         {isAdviser ? (
           <button
@@ -1227,7 +1390,8 @@ function ConsultationCard({
             Wrap up
           </button>
         ) : null}
-      </div>
+        </div>
+      )}
     </article>
   );
 }
@@ -1254,22 +1418,171 @@ function Detail({ icon: Icon, label, value }) {
  * The student sees the same request as a status: waiting, or declined with the
  * adviser's note.
  */
-function RequestCard({ request, isAdviser, busy, onDecide, unread = 0, onOpenThread }) {
-  const [declining, setDeclining] = useState(false);
+/**
+ * A live counter-offer, from whichever side is looking at it.
+ *
+ * The person who did NOT propose is the one who answers: letting someone accept
+ * their own offer would let one side write into the other's diary.
+ */
+function ProposalBanner({ item, myId, busy, onDecide }) {
+  const mine = item.proposed_by === myId;
+  const when = new Date(item.proposed_date);
+
+  if (mine) {
+    return (
+      <div className="mt-4 rounded-xl border border-gold-200 bg-gold-50 px-3.5 py-3">
+        <p className="flex items-center gap-1.5 text-xs font-bold text-gold-800">
+          <Hourglass className="h-3.5 w-3.5" aria-hidden="true" />
+          Waiting for them to confirm {dateFormatter.format(when)} at{' '}
+          {timeFormatter.format(when)}
+        </p>
+        <p className="mt-1 text-xs text-gold-700">
+          The slot is held until they answer, or until that time passes.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-4 rounded-xl border border-gold-300 bg-gold-50 px-3.5 py-3.5">
+      <p className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-gold-800">
+        <CalendarClock className="h-3.5 w-3.5" aria-hidden="true" />
+        {item.proposed_by_name || 'The other side'} suggested a different time
+      </p>
+      <p className="mt-1.5 text-sm font-extrabold text-ink-900">
+        {dateFormatter.format(when)} at {timeFormatter.format(when)}
+      </p>
+      {item.proposed_note ? (
+        <p className="mt-1 text-sm text-ink-700">&ldquo;{item.proposed_note}&rdquo;</p>
+      ) : null}
+
+      <div className="mt-3 flex flex-wrap justify-end gap-2.5">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => onDecide(item, 'declined')}
+          className="rounded-xl border border-ink-200 bg-white px-4 py-2.5 text-sm font-bold text-ink-700 transition hover:border-rose-200 hover:text-rose-700 disabled:opacity-60"
+        >
+          Can&apos;t make it
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => onDecide(item, 'accepted')}
+          className="flex items-center gap-2 rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-emerald-900/15 transition hover:bg-emerald-700 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {busy ? (
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+          ) : (
+            <Check className="h-4 w-4" aria-hidden="true" />
+          )}
+          Accept this time
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** A reason box, for the two actions that owe the other side an explanation. */
+function InlineReason({ id, label, placeholder, confirmLabel, tone, busy, onCancel, onConfirm }) {
   const [reason, setReason] = useState('');
+  const confirmClass =
+    tone === 'rose'
+      ? 'bg-rose-600 hover:bg-rose-700'
+      : 'bg-ink-800 hover:bg-ink-900';
+
+  return (
+    <div className="mt-4 border-t border-ink-100 pt-4">
+      <label htmlFor={id} className="text-xs font-bold uppercase tracking-wide text-ink-600">
+        {label}
+      </label>
+      <textarea
+        id={id}
+        rows={2}
+        value={reason}
+        onChange={(event) => setReason(event.target.value)}
+        placeholder={placeholder}
+        className="mt-1.5 w-full rounded-xl border border-ink-200 bg-ink-50 px-3.5 py-2.5 text-sm text-ink-900 transition placeholder:text-ink-400 focus:border-brand-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-brand-500/10"
+      />
+      <div className="mt-3 flex flex-wrap justify-end gap-2.5">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded-xl border border-ink-200 px-4 py-2.5 text-sm font-bold text-ink-700 transition hover:bg-ink-50"
+        >
+          Back
+        </button>
+        <button
+          type="button"
+          disabled={busy || !reason.trim()}
+          onClick={() => onConfirm(reason.trim())}
+          className={`flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold text-white transition disabled:cursor-not-allowed disabled:opacity-60 ${confirmClass}`}
+        >
+          {busy ? (
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+          ) : (
+            <X className="h-4 w-4" aria-hidden="true" />
+          )}
+          {confirmLabel}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * One request, from both sides of the approval.
+ *
+ * The adviser can approve, decline, or offer a different time -- that last one
+ * is the realistic case: a group asks for 9am, the adviser teaches then. The
+ * offer still goes back to the group to accept, because they picked 9am around
+ * their own class timetable, and booking noon for them produces a no-show
+ * rather than a meeting.
+ */
+function RequestCard({
+  request,
+  isAdviser,
+  myId,
+  busy,
+  onDecide,
+  onDecideProposal,
+  onPropose,
+  onCancel,
+  unread = 0,
+  onOpenThread,
+}) {
+  // null | 'declining' | 'cancelling'
+  const [mode, setMode] = useState(null);
 
   const when = new Date(request.meeting_date);
   const declined = request.status === 'declined';
+  const cancelled = request.status === 'cancelled';
+  const closed = declined || cancelled;
+  const proposalLive = Boolean(request.proposal_live);
+
+  const statusChip = cancelled
+    ? { label: 'Cancelled', tone: 'bg-ink-100 text-ink-600', Icon: X }
+    : declined
+      ? { label: 'Declined', tone: 'bg-rose-50 text-rose-700', Icon: X }
+      : proposalLive
+        ? { label: 'New time suggested', tone: 'bg-gold-100 text-gold-800', Icon: CalendarClock }
+        : {
+            label: isAdviser ? 'Needs your approval' : 'Waiting for approval',
+            tone: 'bg-gold-50 text-gold-700',
+            Icon: Hourglass,
+          };
 
   return (
     <article
       className={`animate-rise relative overflow-hidden rounded-2xl bg-white p-5 shadow-card ring-1 transition duration-300 hover:shadow-raised ${
-        declined ? 'ring-rose-100' : 'ring-gold-200'
+        cancelled ? 'ring-ink-200' : declined ? 'ring-rose-100' : 'ring-gold-200'
       }`}
     >
       <span
         aria-hidden="true"
-        className={`absolute inset-y-0 left-0 w-1 ${declined ? 'bg-rose-400' : 'bg-gold-400'}`}
+        className={`absolute inset-y-0 left-0 w-1 ${
+          cancelled ? 'bg-ink-300' : declined ? 'bg-rose-400' : 'bg-gold-400'
+        }`}
       />
 
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1282,16 +1595,10 @@ function RequestCard({ request, isAdviser, busy, onDecide, unread = 0, onOpenThr
           </h3>
         </div>
         <span
-          className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-bold ${
-            declined ? 'bg-rose-50 text-rose-700' : 'bg-gold-50 text-gold-700'
-          }`}
+          className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-bold ${statusChip.tone}`}
         >
-          {declined ? (
-            <X className="h-3.5 w-3.5" aria-hidden="true" />
-          ) : (
-            <Hourglass className="h-3.5 w-3.5" aria-hidden="true" />
-          )}
-          {declined ? 'Declined' : isAdviser ? 'Needs your approval' : 'Waiting for approval'}
+          <statusChip.Icon className="h-3.5 w-3.5" aria-hidden="true" />
+          {statusChip.label}
         </span>
       </div>
 
@@ -1332,9 +1639,25 @@ function RequestCard({ request, isAdviser, busy, onDecide, unread = 0, onOpenThr
 
       {declined && request.decline_reason ? (
         <p className="mt-4 rounded-xl bg-rose-50 px-3.5 py-3 text-sm font-medium text-rose-800">
-          <span className="font-bold">Adviser's note: </span>
+          <span className="font-bold">Adviser&apos;s note: </span>
           {request.decline_reason}
         </p>
+      ) : null}
+
+      {cancelled && request.cancel_reason ? (
+        <p className="mt-4 rounded-xl bg-ink-100 px-3.5 py-3 text-sm font-medium text-ink-700">
+          <span className="font-bold">Called off: </span>
+          {request.cancel_reason}
+        </p>
+      ) : null}
+
+      {proposalLive ? (
+        <ProposalBanner
+          item={request}
+          myId={myId}
+          busy={busy}
+          onDecide={onDecideProposal}
+        />
       ) : null}
 
       {onOpenThread ? (
@@ -1342,84 +1665,89 @@ function RequestCard({ request, isAdviser, busy, onDecide, unread = 0, onOpenThr
           <ThreadButton
             unread={unread}
             onClick={() => onOpenThread(request.id)}
-            label={declined ? 'Reply' : 'Messages'}
+            label={closed ? 'Reply' : 'Messages'}
           />
         </div>
       ) : null}
 
       {/* ------------------------------------------------ the decision --- */}
-      {isAdviser && request.status === 'pending' ? (
-        declining ? (
-          <div className="mt-4 border-t border-ink-100 pt-4">
-            <label
-              htmlFor={`decline-${request.id}`}
-              className="text-xs font-bold uppercase tracking-wide text-ink-600"
-            >
-              Why are you declining?
-            </label>
-            <textarea
-              id={`decline-${request.id}`}
-              rows={2}
-              value={reason}
-              onChange={(event) => setReason(event.target.value)}
-              placeholder="e.g. I have a class then - try Thursday afternoon."
-              className="mt-1.5 w-full rounded-xl border border-ink-200 bg-ink-50 px-3.5 py-2.5 text-sm text-ink-900 transition placeholder:text-ink-400 focus:border-brand-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-brand-500/10"
-            />
-            <div className="mt-3 flex flex-wrap justify-end gap-2.5">
+      {mode === 'declining' ? (
+        <InlineReason
+          id={`decline-${request.id}`}
+          label="Why are you declining?"
+          placeholder="e.g. That chapter is not ready for review yet."
+          confirmLabel="Send decline"
+          tone="rose"
+          busy={busy}
+          onCancel={() => setMode(null)}
+          onConfirm={(reason) => onDecide(request, 'declined', reason)}
+        />
+      ) : mode === 'cancelling' ? (
+        <InlineReason
+          id={`cancel-${request.id}`}
+          label={isAdviser ? 'Why are you calling this off?' : 'Why are you withdrawing?'}
+          placeholder="e.g. We are not ready — we will rebook next week."
+          confirmLabel={isAdviser ? 'Call it off' : 'Withdraw request'}
+          tone="ink"
+          busy={busy}
+          onCancel={() => setMode(null)}
+          onConfirm={(reason) => onCancel(request, reason)}
+        />
+      ) : !closed && !proposalLive ? (
+        <div className="mt-4 flex flex-wrap items-center justify-end gap-2.5 border-t border-ink-100 pt-4">
+          {isAdviser && request.status === 'pending' ? (
+            <>
               <button
                 type="button"
-                onClick={() => {
-                  setDeclining(false);
-                  setReason('');
-                }}
-                className="rounded-xl border border-ink-200 px-4 py-2.5 text-sm font-bold text-ink-700 transition hover:bg-ink-50"
+                disabled={busy}
+                onClick={() => setMode('declining')}
+                className="rounded-xl border border-ink-200 px-4 py-2.5 text-sm font-bold text-ink-700 transition hover:border-rose-200 hover:text-rose-700 disabled:opacity-60"
               >
-                Back
+                Decline
+              </button>
+              {/* The realistic middle answer: not no, just not then. */}
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => onPropose(request)}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-gold-300 bg-gold-50 px-4 py-2.5 text-sm font-bold text-gold-800 transition hover:bg-gold-100 disabled:opacity-60"
+              >
+                <CalendarClock className="h-4 w-4" aria-hidden="true" />
+                Offer another time
               </button>
               <button
                 type="button"
-                disabled={busy || !reason.trim()}
-                onClick={() => onDecide(request, 'declined', reason.trim())}
-                className="flex items-center gap-2 rounded-xl bg-rose-600 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={busy}
+                onClick={() => onDecide(request, 'approved')}
+                className="flex items-center gap-2 rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-emerald-900/15 transition hover:bg-emerald-700 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {busy ? (
                   <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
                 ) : (
-                  <X className="h-4 w-4" aria-hidden="true" />
+                  <Check className="h-4 w-4" aria-hidden="true" />
                 )}
-                Send decline
+                Approve
               </button>
-            </div>
-          </div>
-        ) : (
-          <div className="mt-4 flex flex-wrap justify-end gap-2.5 border-t border-ink-100 pt-4">
+            </>
+          ) : null}
+
+          {/* A group that no longer needs the slot should give it back. */}
+          {!isAdviser && request.status === 'pending' ? (
             <button
               type="button"
               disabled={busy}
-              onClick={() => setDeclining(true)}
+              onClick={() => setMode('cancelling')}
               className="rounded-xl border border-ink-200 px-4 py-2.5 text-sm font-bold text-ink-700 transition hover:border-rose-200 hover:text-rose-700 disabled:opacity-60"
             >
-              Decline
+              Withdraw request
             </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => onDecide(request, 'approved')}
-              className="flex items-center gap-2 rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-emerald-900/15 transition hover:bg-emerald-700 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {busy ? (
-                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-              ) : (
-                <Check className="h-4 w-4" aria-hidden="true" />
-              )}
-              Approve
-            </button>
-          </div>
-        )
+          ) : null}
+        </div>
       ) : null}
     </article>
   );
 }
+
 
 function RequestsView({
   loading,
@@ -1430,6 +1758,10 @@ function RequestsView({
   onBook,
   unreadByConsultation,
   onOpenThread,
+  myId,
+  onDecideProposal,
+  onPropose,
+  onCancelRequest,
 }) {
   const pending = requests.filter((request) => request.status === 'pending').length;
 
@@ -1485,6 +1817,10 @@ function RequestsView({
               isAdviser={isAdviser}
               busy={busyRequestId === request.id}
               onDecide={onDecide}
+              myId={myId}
+              onDecideProposal={onDecideProposal}
+              onPropose={onPropose}
+              onCancel={onCancelRequest}
               unread={unreadByConsultation?.[request.id] ?? 0}
               onOpenThread={onOpenThread}
             />

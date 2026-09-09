@@ -21,6 +21,8 @@ client/                    Vite + React app
   src/components/CompleteSessionModal.jsx  minutes + action items
   src/components/HistoryView.jsx           sessions already held
   src/components/RecordView.jsx            the printable consultation record
+  src/components/ProposeTimeModal.jsx      counter-offer / move a session
+  src/components/SlotPicker.jsx            shared slot grid
   src/lib/api.js           fetch wrapper
   src/lib/session.js       localStorage session
   src/lib/schedule.js      weekday / slot helpers
@@ -31,6 +33,7 @@ supabase/migrations/
   0006_adviser_availability.sql        consultation hours
   0007_messages_and_session_wrapup.sql threads, minutes, action items
   0008_attendance.sql                  who was in the room
+  0009_counter_proposals.sql           counter-offers, moves, cancellation
 ```
 
 ## 1. Database
@@ -129,6 +132,9 @@ development and no CORS round trip is needed.
 | GET | `/api/advisers/:id/slots?date=` | Bearer | Open slots on a date, plus `taken` flags |
 | POST | `/api/consultations` | Bearer | Book (adviser) / request (student) |
 | PATCH | `/api/consultations/:id/decision` | Bearer | Adviser approves or declines |
+| POST | `/api/consultations/:id/propose` | Bearer | Offer a different time |
+| PATCH | `/api/consultations/:id/proposal` | Bearer | Accept or refuse that offer |
+| PATCH | `/api/consultations/:id/cancel` | Bearer | Call it off, with a reason |
 | GET | `/api/consultations/history` | Bearer | Sessions already held |
 | GET | `/api/consultations/:id` | Bearer | One session + who a task can go to |
 | GET | `/api/consultations/:id/messages` | Bearer | The thread (also marks it read) |
@@ -193,6 +199,57 @@ and slot times are displayed in that zone rather than the browser's.
 
 Deleting a block does not touch sessions already booked out of it — those are
 real consultations now, not slots.
+
+### When the time does not work
+
+A group asks for 9-11am; the adviser teaches then and wants noon. Approve and
+decline were the only two answers available, so the real one came out as a
+sentence in `decline_reason` and the group had to start over and guess again.
+
+The adviser can now **offer another time**, picked from their own published
+hours so the offer is guaranteed to be one they are free for. The group still
+has to accept it:
+
+```
+student requests 9-11am        status: pending      -> adviser's move
+   |
+   +- approve             -> scheduled
+   +- decline             -> declined  (reason, thread stays open)
+   +- offer noon instead  -> pending + proposed_date  -> STUDENT's move
+                                |
+                                +- accept   -> scheduled at noon
+                                +- can't    -> cancelled; book another slot
+```
+
+**Why the group still has to agree.** They asked for 9am because that is when
+they are free; noon is very likely a class. Booking it for them does not produce
+a meeting, it produces a no-show — which wastes the adviser's slot *and* lands in
+the consultation record as a session that never happened.
+
+**Why it is not a negotiation.** The adviser's time is the scarce resource, so
+this is one counter-offer, then accept or start over. Refusing a counter-offer
+closes the request rather than bouncing it back; there is no ping-pong.
+
+Three things make it hold together:
+
+- **`meeting_date` never moves until somebody accepts.** The offer lives in
+  `proposed_date`, so a proposal can never quietly relocate a session nobody
+  agreed to move. Accepting is the only thing that writes `meeting_date`.
+- **A live offer holds its slot.** The slot grid and the booking guard both look
+  for `proposed_date` as readily as `meeting_date`, so another group cannot take
+  noon while the first group is sitting in the class that caused the problem.
+- **An offer expires on its own.** It counts only while `proposed_date > now()`,
+  so nothing has to sweep the table and a stale offer stops holding its slot.
+
+Whose move it is, is derived rather than stored — `needs_you` on each row of the
+inbox — so an adviser who has already counter-offered stops being nagged about
+their own offer.
+
+**Moving and cancelling** are the same machinery. Either side can ask to move an
+already-scheduled session (the other side accepts, and refusing leaves the
+original time standing), and either side can cancel outright with a reason. That
+is what finally makes `cancelled` reachable — it had sat in the status CHECK
+since 0005 with nothing able to set it.
 
 ### Consultation threads
 
@@ -324,6 +381,5 @@ primary key is the (consultation, person) pair.
 - **Sessions expire abruptly.** `refresh_token` is saved to localStorage but only
   ever used during registration — never to refresh an expiring session, so a
   student is dropped to the login screen mid-task.
-- **No cancel or reschedule.** A student cannot withdraw a booking and an adviser
-  cannot call one off; only approve/decline exist, and only while pending. The
-  `cancelled` status is in the CHECK constraint and still unreachable.
+- **No reminders.** Nothing tells either side that a consultation is tomorrow,
+  which is the usual reason one gets missed. Needs the mailer above.

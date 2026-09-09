@@ -506,10 +506,16 @@ async function upcomingConsultations(profile, limit) {
             c.location,
             c.meeting_date,
             c.status,
+            c.proposed_date,
+            c.proposed_by,
+            c.proposed_note,
+            (c.proposed_date is not null and c.proposed_date > now()) as proposal_live,
+            pb.full_name as proposed_by_name,
             p.full_name as adviser_name,
             p.email     as adviser_email
        from public.consultations c
        left join public.profiles p on p.id = c.adviser_id
+       left join public.profiles pb on pb.id = c.proposed_by
       where c.status = 'scheduled'
         and c.meeting_date >= now()
         and (
@@ -576,22 +582,49 @@ app.get(
               c.created_at,
               c.responded_at,
               c.decline_reason,
+              c.proposed_date,
+              c.proposed_by,
+              c.proposed_note,
+              c.cancel_reason,
+              c.cancelled_by,
               s.full_name  as requester_name,
               s.email      as requester_email,
               s.course     as requester_course,
               s.year_level as requester_year_level,
               p.full_name  as adviser_name,
-              p.email      as adviser_email
+              p.email      as adviser_email,
+              pb.full_name as proposed_by_name,
+              (c.proposed_date is not null and c.proposed_date > now()) as proposal_live,
+              -- Whose move it is. An adviser who has already counter-offered is
+              -- waiting on the student, so the request leaves their queue.
+              case
+                when c.proposed_date is not null and c.proposed_date > now()
+                     and c.proposed_by <> $1 then true
+                when $2 = 'adviser' and c.status = 'pending'
+                     and (c.proposed_date is null or c.proposed_date <= now()) then true
+                else false
+              end as needs_you
          from public.consultations c
          left join public.profiles s on s.id = c.created_by
          left join public.profiles p on p.id = c.adviser_id
+         left join public.profiles pb on pb.id = c.proposed_by
         where (
-                ($2 = 'adviser' and c.adviser_id = $1 and c.status = 'pending')
+                ($2 = 'adviser' and c.adviser_id = $1 and (
+                      c.status = 'pending'
+                   or (c.status = 'scheduled' and c.proposed_date is not null
+                       and c.proposed_date > now() and c.proposed_by <> $1)
+                ))
              or ($2 <> 'adviser'
                  and (c.group_name = $3 or c.created_by = $1)
                  and (
                        c.status = 'pending'
-                    or (c.status = 'declined' and c.responded_at > now() - interval '14 days')
+                       -- A move proposed on a booked session needs an answer
+                       -- too, so it belongs in the same queue.
+                    or (c.status = 'scheduled' and c.proposed_date is not null
+                        and c.proposed_date > now() and c.proposed_by <> $1)
+                    or (c.status in ('declined', 'cancelled')
+                        and coalesce(c.responded_at, c.cancelled_at)
+                            > now() - interval '14 days')
                  ))
               )
         order by c.meeting_date asc`,
@@ -890,9 +923,18 @@ app.get(
                     from public.consultations c, args g
                    where c.adviser_id = g.adviser_id
                      and c.status in ('pending', 'scheduled')
-                     and c.meeting_date >= b.slot_start
-                     and c.meeting_date <  b.slot_start
-                                           + make_interval(mins => b.slot_minutes)
+                     and (
+                           (c.meeting_date >= b.slot_start
+                            and c.meeting_date < b.slot_start
+                                                 + make_interval(mins => b.slot_minutes))
+                           -- A time the adviser has offered somebody else is
+                           -- spoken for until they answer, or it lapses.
+                        or (c.proposed_date is not null
+                            and c.proposed_date > now()
+                            and c.proposed_date >= b.slot_start
+                            and c.proposed_date < b.slot_start
+                                                  + make_interval(mins => b.slot_minutes))
+                     )
                 ) as taken
            from block b
           where b.slot_start > now()
@@ -925,7 +967,7 @@ app.get(
  *   1. published hours  -> the time must sit on a slot boundary inside a block
  *   2. always           -> the slot must not already be spoken for
  */
-async function slotStatus(adviserId, meetingDate) {
+async function slotStatus(adviserId, meetingDate, { excludeId = null } = {}) {
   const { rows } = await pool.query(
     `with req as (
        select $1::uuid as adviser_id,
@@ -955,12 +997,22 @@ async function slotStatus(adviserId, meetingDate) {
                from public.consultations c, req r
               where c.adviser_id = r.adviser_id
                 and c.status in ('pending', 'scheduled')
-                and c.meeting_date > r.at
-                      - make_interval(mins => coalesce((select slot_minutes from match), $4))
-                and c.meeting_date < r.at
-                      + make_interval(mins => coalesce((select slot_minutes from match), $4))
+                -- Rescheduling a session must not collide with itself.
+                and ($5::uuid is null or c.id <> $5)
+                and (
+                      (c.meeting_date > r.at
+                         - make_interval(mins => coalesce((select slot_minutes from match), $4))
+                       and c.meeting_date < r.at
+                         + make_interval(mins => coalesce((select slot_minutes from match), $4)))
+                   or (c.proposed_date is not null
+                       and c.proposed_date > now()
+                       and c.proposed_date > r.at
+                         - make_interval(mins => coalesce((select slot_minutes from match), $4))
+                       and c.proposed_date < r.at
+                         + make_interval(mins => coalesce((select slot_minutes from match), $4)))
+                )
             )                                                     as clashes`,
-    [adviserId, meetingDate.toISOString(), CAMPUS_TIMEZONE, DEFAULT_SLOT_MINUTES],
+    [adviserId, meetingDate.toISOString(), CAMPUS_TIMEZONE, DEFAULT_SLOT_MINUTES, excludeId],
   );
 
   const row = rows[0];
@@ -1102,6 +1154,209 @@ app.post(
   }),
 );
 
+/* --------------------------------------------- counter-offers and moves -- */
+
+/*
+ * A student asks for 9-11am; the adviser teaches then and wants 12pm.
+ *
+ * The adviser offers the alternative and the student still has to accept it,
+ * because the student asked for 9am precisely because that is when they are
+ * free -- 12pm is very likely a class, and booking it for them produces a
+ * no-show rather than a meeting. It is not a negotiation either: one
+ * counter-offer, then accept or start over.
+ *
+ * `meeting_date` keeps holding the *agreed* time throughout. Only accepting
+ * moves it, so a proposal can never quietly relocate a session nobody agreed to
+ * move. `proposed_date` is live only while it is in the future, so a proposal
+ * nobody answered expires on its own and stops holding its slot.
+ */
+
+/** Who has to act next on a consultation, or null when nobody does. */
+function turnOf(consultation) {
+  const live =
+    consultation.proposed_date && new Date(consultation.proposed_date).getTime() > Date.now();
+
+  if (live) return { waitingOn: 'other', proposedBy: consultation.proposed_by };
+  if (consultation.status === 'pending') return { waitingOn: 'adviser', proposedBy: null };
+  return null;
+}
+
+/**
+ * POST /api/consultations/:id/propose
+ * Body: { meeting_date (ISO), note? }
+ *
+ * On a pending request this is the adviser's counter-offer. On a scheduled
+ * session it is a request to move it, which either side may raise -- and which
+ * the other side has to accept before anything actually moves.
+ */
+app.post(
+  '/api/consultations/:id/propose',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const consultation = await loadConsultationFor(req.profile, req.params.id);
+
+    if (!['pending', 'scheduled'].includes(consultation.status)) {
+      throw new HttpError(409, 'That consultation is closed.');
+    }
+    // A pending request is the adviser's to answer; the student already made
+    // their offer by booking it.
+    if (consultation.status === 'pending' && req.profile.role !== 'adviser') {
+      throw new HttpError(
+        403,
+        'Your adviser answers this request. To ask for another time, cancel it and book a different slot.',
+      );
+    }
+
+    const turn = turnOf(consultation);
+    if (turn?.waitingOn === 'other' && turn.proposedBy !== req.profile.id) {
+      throw new HttpError(409, 'There is already a time waiting on your answer.');
+    }
+
+    const rawDate = String(req.body?.meeting_date ?? '').trim();
+    const proposed = new Date(rawDate);
+    if (!rawDate || Number.isNaN(proposed.getTime())) {
+      throw new HttpError(400, 'Pick a valid date and time.');
+    }
+    if (proposed.getTime() <= Date.now()) {
+      throw new HttpError(400, 'Propose a time in the future.');
+    }
+    if (proposed.getTime() === new Date(consultation.meeting_date).getTime()) {
+      throw new HttpError(400, 'That is already the time on this consultation.');
+    }
+
+    const note = String(req.body?.note ?? '').trim().slice(0, 500) || null;
+
+    // The adviser proposes out of their own diary, so the published-hours rule
+    // does not apply to them -- but a double-booking still does.
+    const slot = await slotStatus(consultation.adviser_id, proposed, {
+      excludeId: consultation.id,
+    });
+    if (slot.taken) {
+      throw new HttpError(409, 'There is already something at that time.');
+    }
+
+    const { rows } = await pool.query(
+      `update public.consultations
+          set proposed_date = $2, proposed_by = $3, proposed_at = now(), proposed_note = $4
+        where id = $1 and status in ('pending', 'scheduled')
+    returning id, status, meeting_date, proposed_date, proposed_by, proposed_note`,
+      [consultation.id, proposed.toISOString(), req.profile.id, note],
+    );
+
+    if (!rows[0]) throw new HttpError(409, 'That consultation is closed.');
+    res.json({ consultation: rows[0] });
+  }),
+);
+
+/**
+ * PATCH /api/consultations/:id/proposal
+ * Body: { decision: 'accepted' | 'declined', reason? }
+ *
+ * The other side's answer, and the only thing that actually moves a session.
+ * Declining a counter-offer on a *request* ends it -- there is no ping-pong, and
+ * the group books again from the adviser's open slots. Declining a move on an
+ * already-scheduled session just leaves the original time standing.
+ */
+app.patch(
+  '/api/consultations/:id/proposal',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const consultation = await loadConsultationFor(req.profile, req.params.id);
+
+    const decision = String(req.body?.decision ?? '').trim();
+    if (!['accepted', 'declined'].includes(decision)) {
+      throw new HttpError(400, 'Decision must be accepted or declined.');
+    }
+
+    const turn = turnOf(consultation);
+    if (turn?.waitingOn !== 'other') {
+      throw new HttpError(409, 'There is no live proposal on that consultation.');
+    }
+    // Answering your own offer would let one side write into the other's diary.
+    if (turn.proposedBy === req.profile.id) {
+      throw new HttpError(403, 'You proposed that time. The other side answers it.');
+    }
+
+    const reason = String(req.body?.reason ?? '').trim().slice(0, 500) || null;
+
+    let sql;
+    let params;
+    if (decision === 'accepted') {
+      sql = `update public.consultations
+                set meeting_date = proposed_date,
+                    status = 'scheduled',
+                    responded_at = now(),
+                    proposed_date = null, proposed_by = null,
+                    proposed_at = null, proposed_note = null
+              where id = $1 and proposed_date is not null and proposed_date > now()
+          returning id, status, meeting_date, topic, group_name, location`;
+      params = [consultation.id];
+    } else if (consultation.status === 'pending') {
+      // The counter-offer was the answer to the request, so refusing it ends
+      // the request rather than reopening it.
+      sql = `update public.consultations
+                set status = 'cancelled',
+                    cancelled_at = now(), cancelled_by = $2, cancel_reason = $3,
+                    proposed_date = null, proposed_by = null,
+                    proposed_at = null, proposed_note = null
+              where id = $1 and proposed_date is not null and proposed_date > now()
+          returning id, status, meeting_date, topic, group_name, location`;
+      params = [consultation.id, req.profile.id, reason ?? 'The proposed time did not work.'];
+    } else {
+      // A refused move on a booked session: the original time stands.
+      sql = `update public.consultations
+                set proposed_date = null, proposed_by = null,
+                    proposed_at = null, proposed_note = null
+              where id = $1 and proposed_date is not null and proposed_date > now()
+          returning id, status, meeting_date, topic, group_name, location`;
+      params = [consultation.id];
+    }
+
+    const { rows } = await pool.query(sql, params);
+    if (!rows[0]) throw new HttpError(409, 'That proposal is no longer open.');
+
+    res.json({ consultation: rows[0], decision });
+  }),
+);
+
+/**
+ * PATCH /api/consultations/:id/cancel
+ * Body: { reason }
+ *
+ * Either side calling it off, and the first thing in this system that can reach
+ * the 'cancelled' status -- it has sat in the CHECK constraint since 0005 with
+ * nothing able to set it. A student withdrawing a request and an adviser who
+ * cannot make a booked session are the same operation.
+ */
+app.patch(
+  '/api/consultations/:id/cancel',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const consultation = await loadConsultationFor(req.profile, req.params.id);
+
+    if (!['pending', 'scheduled'].includes(consultation.status)) {
+      throw new HttpError(409, 'That consultation is already closed.');
+    }
+
+    const reason = String(req.body?.reason ?? '').trim().slice(0, 500);
+    if (!reason) throw new HttpError(400, 'Give the other side a reason.');
+
+    const { rows } = await pool.query(
+      `update public.consultations
+          set status = 'cancelled',
+              cancelled_at = now(), cancelled_by = $2, cancel_reason = $3,
+              proposed_date = null, proposed_by = null,
+              proposed_at = null, proposed_note = null
+        where id = $1 and status in ('pending', 'scheduled')
+    returning id, status, topic, group_name, meeting_date, cancel_reason`,
+      [consultation.id, req.profile.id, reason],
+    );
+
+    if (!rows[0]) throw new HttpError(409, 'That consultation is already closed.');
+    res.json({ consultation: rows[0] });
+  }),
+);
+
 /* ------------------------------------------------- threads and wrap-up --- */
 
 /*
@@ -1126,6 +1381,8 @@ async function loadConsultationFor(profile, consultationId) {
     `select c.id, c.adviser_id, c.group_name, c.topic, c.location, c.meeting_date,
             c.status, c.created_by, c.created_at, c.decline_reason,
             c.minutes, c.completed_at,
+            c.proposed_date, c.proposed_by, c.proposed_note,
+            c.cancel_reason, c.cancelled_by,
             p.full_name as adviser_name,
             p.email     as adviser_email,
             s.full_name as requester_name,
