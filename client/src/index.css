@@ -83,8 +83,15 @@
   --color-info-600: #2563eb;
   --color-info-700: #1d4ed8;
 
-  /* Page ground behind the content column. */
-  --color-canvas: #f7f7f8;
+  /*
+   * Page ground behind the content column. It was #f7f7f8 -- eight points off
+   * white, which on most screens is no difference at all, so the white cards
+   * had nothing to sit on and the page read as one flat sheet. This is deep
+   * enough to see and carries a trace of the brand's red, so the app's ground
+   * belongs to the same family as the maroon on the sign-in screen instead of
+   * being a cool grey borrowed from somewhere else.
+   */
+  --color-canvas: #f3eff1;
 
   /*
    * Contact shadows. Each is a tight 1px seat plus one soft spread; the alpha

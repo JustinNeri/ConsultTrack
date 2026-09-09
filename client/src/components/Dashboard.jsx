@@ -2014,7 +2014,7 @@ function GreetingHeader({ displayName, isAdviser }) {
     <section className="animate-rise flex flex-wrap items-start justify-between gap-4">
       <div className="min-w-0">
         <h2 className="text-h1 font-bold tracking-tight text-ink-900">
-          {greetingFor(now)}, {displayName} <span aria-hidden="true">&#128075;</span>
+          {greetingFor(now)}, {displayName}
         </h2>
         <p className="mt-1 text-body text-ink-500">
           {isAdviser
