@@ -230,6 +230,22 @@ const JOIN_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
  *
  * Takes placeholders rather than values, so each caller keeps its own numbering.
  */
+/**
+ * The adviser side of the same question.
+ *
+ * The lead adviser owns the session, but a panelist has to see the defense they
+ * are sitting on -- including its thread, its files and its record.
+ */
+function adviserVisibility(adviser) {
+  return `(
+              c.adviser_id = ${adviser}
+           or exists (
+                select 1 from public.consultation_panelists cp
+                 where cp.consultation_id = c.id and cp.adviser_id = ${adviser}
+              )
+         )`;
+}
+
 function groupVisibility({ creator, groupId, groupName }) {
   return `(
               (c.group_id is not null
@@ -287,6 +303,8 @@ async function requireAuth(req, _res, next) {
       role: 'student',
       group_name: null,
       section: null,
+      is_coordinator: false,
+      adviser_capacity: null,
     };
 
     const group = membership[0] ?? null;
@@ -303,6 +321,27 @@ async function requireAuth(req, _res, next) {
   }
 }
 
+/**
+ * Coordinators.
+ *
+ * A capstone coordinator is a faculty member who also runs the program, so it is
+ * a capability on top of the adviser role rather than a role of its own -- every
+ * `role = 'adviser'` check in this file stays true for them, and they keep
+ * advising their own groups.
+ *
+ * Their reach is their department. There is no university-wide view, because
+ * there is nobody whose job that is.
+ */
+function requireCoordinator(req, _res, next) {
+  if (!req.profile?.is_coordinator) {
+    return next(new HttpError(403, 'That is a capstone coordinator view.'));
+  }
+  if (!req.profile.department) {
+    return next(new HttpError(409, 'Your profile has no department, so there is nothing to coordinate.'));
+  }
+  return next();
+}
+
 /* ------------------------------------------------------------ auth routes */
 
 /*
@@ -316,6 +355,7 @@ async function requireAuth(req, _res, next) {
  */
 
 const PROFILE_COLUMNS = `id, full_name, email, role, group_name, section,
+                         is_coordinator, adviser_capacity,
                          last_name, first_name, middle_initial,
                          student_id, department, course, year_level,
                          employee_id, faculty_position,
@@ -818,7 +858,7 @@ async function upcomingConsultations(profile, limit) {
       where c.status = 'scheduled'
         and c.meeting_date >= now()
         and (
-              ($2 = 'adviser' and c.adviser_id = $1)
+              ($2 = 'adviser' and ${adviserVisibility('$1')})
            or ($2 <> 'adviser' and ${groupVisibility({ creator: '$1', groupId: '$5', groupName: '$3' })})
         )
       order by c.meeting_date asc
@@ -1349,7 +1389,7 @@ app.get(
          left join public.profiles p on p.id = a.assignee_id
         where a.status = 'pending'
           and (
-                ($2 = 'adviser' and c.adviser_id = $1)
+                ($2 = 'adviser' and ${adviserVisibility('$1')})
              or ($2 <> 'adviser' and (a.assignee_id = $1 or ${groupVisibility({ creator: '$1', groupId: '$4', groupName: '$3' })}))
           )
         order by c.meeting_date asc nulls last, a.created_at asc`,
@@ -1424,6 +1464,21 @@ app.post(
       }
       groupId = req.profile.group_id;
       groupName = req.profile.group_name;
+
+      /*
+       * If a coordinator has assigned this group an adviser, that is who they
+       * book with. Assignment that a student could route around would not be
+       * assignment, and the adviser's capacity is counted on it.
+       */
+      const { rows: assigned } = await pool.query(
+        `select adviser_id from public.thesis_groups where id = $1 limit 1`,
+        [groupId],
+      );
+      const assignedAdviser = assigned[0]?.adviser_id ?? null;
+      if (assignedAdviser && req.body?.adviser_id && req.body.adviser_id !== assignedAdviser) {
+        throw new HttpError(403, 'Your group has an assigned adviser. Book with them.');
+      }
+      if (assignedAdviser) req.body.adviser_id = assignedAdviser;
     }
 
     const meetingDate = new Date(rawDate);
@@ -1735,7 +1790,7 @@ async function loadConsultationFor(profile, consultationId) {
        left join public.profiles s on s.id = c.created_by
       where c.id = $1
         and (
-              ($3 = 'adviser' and c.adviser_id = $2)
+              ($3 = 'adviser' and ${adviserVisibility('$2')})
            or ($3 <> 'adviser' and ${groupVisibility({ creator: '$2', groupId: '$5', groupName: '$4' })})
         )
       limit 1`,
@@ -1850,7 +1905,7 @@ app.get(
          left join public.consultation_reads r
                 on r.consultation_id = c.id and r.profile_id = $1
         where (
-                ($2 = 'adviser' and c.adviser_id = $1)
+                ($2 = 'adviser' and ${adviserVisibility('$1')})
              or ($2 <> 'adviser' and ${groupVisibility({ creator: '$1', groupId: '$4', groupName: '$3' })})
               )
           and m.sender_id <> $1
@@ -1897,7 +1952,7 @@ app.get(
         where c.status in ('scheduled', 'completed')
           and (c.completed_at is not null or c.meeting_date < now())
           and (
-                ($2 = 'adviser' and c.adviser_id = $1)
+                ($2 = 'adviser' and ${adviserVisibility('$1')})
              or ($2 <> 'adviser' and ${groupVisibility({ creator: '$1', groupId: '$5', groupName: '$3' })})
           )
         order by c.meeting_date desc
@@ -1947,7 +2002,7 @@ app.get(
          left join public.thesis_groups g on g.id = c.group_id
         where c.group_name is not null
           and (
-                ($2 = 'adviser' and c.adviser_id = $1)
+                ($2 = 'adviser' and ${adviserVisibility('$1')})
              or ($2 <> 'adviser' and ${groupVisibility({ creator: '$1', groupId: '$4', groupName: '$3' })})
           )
         -- Rows with a real group collapse on its id, so a rename keeps one
@@ -2000,6 +2055,16 @@ app.get(
               p.email           as adviser_email,
               coalesce((
                 select json_agg(json_build_object(
+                         'name', pp.full_name,
+                         'position', pp.faculty_position,
+                         'role', cp.role
+                       ) order by (cp.role = 'chair') desc, pp.full_name)
+                  from public.consultation_panelists cp
+                  join public.profiles pp on pp.id = cp.adviser_id
+                 where cp.consultation_id = c.id
+              ), '[]'::json) as panel,
+              coalesce((
+                select json_agg(json_build_object(
                          'name', pr.full_name,
                          'student_id', pr.student_id,
                          'present', at.present
@@ -2028,7 +2093,7 @@ app.get(
           and c.status in ('scheduled', 'completed')
           and (c.completed_at is not null or c.meeting_date < now())
           and (
-                ($2 = 'adviser' and c.adviser_id = $1)
+                ($2 = 'adviser' and ${adviserVisibility('$1')})
              or ($2 <> 'adviser' and ${groupVisibility({ creator: '$1', groupId: '$5', groupName: '$3' })})
           )
         order by c.meeting_date asc`,
@@ -2494,6 +2559,797 @@ app.get(
   }),
 );
 
+/* ------------------------------------------------------- program-level -- */
+
+/**
+ * The capstone sequence a department measures its groups against.
+ *
+ * Falls back to the rows with a null department, which are the five steps the
+ * app shipped with. A department that has defined its own gets only its own --
+ * the two sets are alternatives, not layers.
+ */
+async function milestoneSequenceFor(department) {
+  const { rows } = await pool.query(
+    `select key, label, position
+       from public.program_milestones
+      where is_active and department = $1
+      order by position asc`,
+    [department ?? null],
+  );
+  if (rows.length) return rows;
+
+  const { rows: fallback } = await pool.query(
+    `select key, label, position
+       from public.program_milestones
+      where is_active and department is null
+      order by position asc`,
+  );
+  return fallback;
+}
+
+/**
+ * GET /api/program-milestones
+ *
+ * The sequence that applies to the caller. Everyone may read it: it is the
+ * scale their own progress is drawn on.
+ */
+app.get(
+  '/api/program-milestones',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const department =
+      req.profile.is_coordinator && req.query.department
+        ? String(req.query.department)
+        : req.profile.department;
+
+    res.json({ department: department ?? null, milestones: await milestoneSequenceFor(department) });
+  }),
+);
+
+/**
+ * PUT /api/coordinator/program-milestones
+ * Body: { milestones: [{ key, label }] }
+ *
+ * Replaces the department's sequence outright, in order. Sending an empty list
+ * deletes it, which puts the department back on the fallback set.
+ *
+ * Keys already recorded against a group are never deleted from that group's
+ * history -- group_milestones has no foreign key here on purpose, so dropping a
+ * step from the sequence hides it rather than rewriting what a group achieved.
+ */
+app.put(
+  '/api/coordinator/program-milestones',
+  requireAuth,
+  requireCoordinator,
+  asyncRoute(async (req, res) => {
+    const department = req.profile.department;
+    const incoming = Array.isArray(req.body?.milestones) ? req.body.milestones : null;
+    if (!incoming) throw new HttpError(400, 'Send the milestones as a list.');
+    if (incoming.length > 40) throw new HttpError(400, 'That is more steps than a capstone has.');
+
+    const cleaned = [];
+    const seen = new Set();
+    for (const [index, item] of incoming.entries()) {
+      const label = String(item?.label ?? '').trim();
+      if (!label) throw new HttpError(400, 'Every step needs a name.');
+      if (label.length > 80) throw new HttpError(400, `"${label.slice(0, 20)}..." is too long.`);
+
+      // A key given by the client is kept, so renaming a label does not orphan
+      // the progress already recorded against it.
+      const key =
+        String(item?.key ?? '').trim() ||
+        label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40);
+      if (!/^[a-z0-9_]{2,40}$/.test(key)) {
+        throw new HttpError(400, `"${label}" does not make a usable key. Rename it.`);
+      }
+      if (seen.has(key)) throw new HttpError(409, `Two steps resolve to the same key ("${key}").`);
+      seen.add(key);
+      cleaned.push({ key, label, position: index + 1 });
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+      await client.query(`delete from public.program_milestones where department = $1`, [department]);
+      for (const item of cleaned) {
+        await client.query(
+          `insert into public.program_milestones (department, key, label, position)
+                values ($1, $2, $3, $4)`,
+          [department, item.key, item.label, item.position],
+        );
+      }
+      await client.query('commit');
+    } catch (err) {
+      await client.query('rollback').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    res.json({ department, milestones: await milestoneSequenceFor(department) });
+  }),
+);
+
+/**
+ * GET /api/coordinator/overview
+ *
+ * Every group in the coordinator's department, with the two things they are
+ * actually looking for: who advises it, and whether it has gone quiet.
+ *
+ * "Quiet" is measured from the last session that has happened, not the last one
+ * booked, because a group with a booking three weeks out and nothing since
+ * February is exactly the case this view exists to surface.
+ */
+app.get(
+  '/api/coordinator/overview',
+  requireAuth,
+  requireCoordinator,
+  asyncRoute(async (req, res) => {
+    const department = req.profile.department;
+    const sequence = await milestoneSequenceFor(department);
+    const keys = sequence.map((item) => item.key);
+
+    const { rows } = await pool.query(
+      `select g.id,
+              g.name,
+              g.section,
+              g.created_at,
+              a.id                as adviser_id,
+              a.full_name         as adviser_name,
+              (select count(*)::int from public.thesis_group_members m where m.group_id = g.id)
+                                  as member_count,
+              (select count(*)::int from public.consultations c
+                where c.group_id = g.id and c.status = 'completed')
+                                  as sessions_held,
+              (select count(*)::int from public.consultations c
+                where c.group_id = g.id and c.status = 'pending')
+                                  as awaiting_approval,
+              (select max(c.meeting_date) from public.consultations c
+                where c.group_id = g.id
+                  and (c.status = 'completed' or (c.status = 'scheduled' and c.meeting_date < now())))
+                                  as last_session,
+              (select min(c.meeting_date) from public.consultations c
+                where c.group_id = g.id and c.status = 'scheduled' and c.meeting_date >= now())
+                                  as next_session,
+              (select count(*)::int from public.group_milestones gm
+                where gm.group_id = g.id and gm.milestone = any($2::text[]))
+                                  as milestones_done,
+              (select count(*)::int from public.action_items ai
+                 join public.consultations c on c.id = ai.consultation_id
+                where c.group_id = g.id and ai.status = 'pending')
+                                  as open_tasks
+         from public.thesis_groups g
+         left join public.profiles a on a.id = g.adviser_id
+        where g.department = $1 or g.department is null
+        order by g.section asc, g.name asc`,
+      [department, keys],
+    );
+
+    res.json({
+      department,
+      milestone_count: sequence.length,
+      groups: rows.map((row) => ({
+        ...row,
+        progress: sequence.length
+          ? Math.round((row.milestones_done / sequence.length) * 100)
+          : 0,
+      })),
+    });
+  }),
+);
+
+/**
+ * GET /api/coordinator/advisers
+ *
+ * The department's advisers, with how many groups they carry against the cap
+ * they accept. This is the view an assignment is made from.
+ */
+app.get(
+  '/api/coordinator/advisers',
+  requireAuth,
+  requireCoordinator,
+  asyncRoute(async (req, res) => {
+    const { rows } = await pool.query(
+      `select p.id, p.full_name, p.email, p.faculty_position, p.adviser_capacity,
+              (select count(*)::int from public.thesis_groups g where g.adviser_id = p.id)
+                as assigned_groups,
+              (select count(*)::int from public.adviser_availability a
+                where a.adviser_id = p.id and a.is_active)
+                as hour_blocks
+         from public.profiles p
+        where p.role = 'adviser'
+          and p.registration_completed_at is not null
+          and (p.department = $1 or p.department is null)
+        order by p.full_name asc`,
+      [req.profile.department],
+    );
+
+    res.json({ advisers: rows });
+  }),
+);
+
+/**
+ * PATCH /api/coordinator/advisers/:id
+ * Body: { capacity }
+ *
+ * The cap an adviser accepts. Null clears it back to unlimited.
+ */
+app.patch(
+  '/api/coordinator/advisers/:id',
+  requireAuth,
+  requireCoordinator,
+  asyncRoute(async (req, res) => {
+    const adviserId = String(req.params.id);
+    if (!UUID_RE.test(adviserId)) throw new HttpError(400, 'That adviser is not valid.');
+
+    const raw = req.body?.capacity;
+    const capacity = raw === null || raw === '' ? null : Number.parseInt(raw, 10);
+    if (capacity !== null && (!Number.isFinite(capacity) || capacity < 0 || capacity > 99)) {
+      throw new HttpError(400, 'A capacity is a number between 0 and 99, or empty for no limit.');
+    }
+
+    const { rows } = await pool.query(
+      `update public.profiles set adviser_capacity = $2
+        where id = $1 and role = 'adviser' and (department = $3 or department is null)
+    returning id, full_name, adviser_capacity`,
+      [adviserId, capacity, req.profile.department],
+    );
+    if (!rows[0]) throw new HttpError(404, 'That adviser is not in your department.');
+
+    res.json({ adviser: rows[0] });
+  }),
+);
+
+/**
+ * PATCH /api/coordinator/groups/:id/adviser
+ * Body: { adviserId }   (null to unassign)
+ *
+ * Assigning refuses to push an adviser past the cap they accept. Unassigning
+ * puts the group back to choosing per booking, which is how the app worked
+ * before assignment existed.
+ */
+app.patch(
+  '/api/coordinator/groups/:id/adviser',
+  requireAuth,
+  requireCoordinator,
+  asyncRoute(async (req, res) => {
+    const groupId = String(req.params.id);
+    if (!UUID_RE.test(groupId)) throw new HttpError(400, 'That group is not valid.');
+
+    const { rows: groups } = await pool.query(
+      `select id, name, department from public.thesis_groups where id = $1 limit 1`,
+      [groupId],
+    );
+    const group = groups[0];
+    if (!group) throw new HttpError(404, 'That group was not found.');
+    if (group.department && group.department !== req.profile.department) {
+      throw new HttpError(403, 'That group is in another department.');
+    }
+
+    const raw = req.body?.adviserId;
+    if (raw === null || raw === '') {
+      const { rows } = await pool.query(
+        `update public.thesis_groups
+            set adviser_id = null, adviser_assigned_at = null, adviser_assigned_by = null
+          where id = $1
+      returning id, adviser_id`,
+        [groupId],
+      );
+      return res.json({ group: rows[0] });
+    }
+
+    const adviserId = String(raw);
+    if (!UUID_RE.test(adviserId)) throw new HttpError(400, 'That adviser is not valid.');
+
+    const { rows: advisers } = await pool.query(
+      `select p.id, p.full_name, p.adviser_capacity,
+              (select count(*)::int from public.thesis_groups g
+                where g.adviser_id = p.id and g.id <> $2) as assigned_groups
+         from public.profiles p
+        where p.id = $1 and p.role = 'adviser'
+          and p.registration_completed_at is not null
+          and (p.department = $3 or p.department is null)
+        limit 1`,
+      [adviserId, groupId, req.profile.department],
+    );
+    const adviser = advisers[0];
+    if (!adviser) throw new HttpError(404, 'That adviser is not in your department.');
+
+    if (adviser.adviser_capacity !== null && adviser.assigned_groups >= adviser.adviser_capacity) {
+      throw new HttpError(
+        409,
+        `${adviser.full_name} already carries ${adviser.assigned_groups} of ${adviser.adviser_capacity} groups.`,
+      );
+    }
+
+    const { rows } = await pool.query(
+      `update public.thesis_groups
+          set adviser_id = $2, adviser_assigned_at = now(), adviser_assigned_by = $3
+        where id = $1
+    returning id, adviser_id, adviser_assigned_at`,
+      [groupId, adviserId, req.profile.id],
+    );
+
+    res.json({ group: { ...rows[0], adviser_name: adviser.full_name } });
+  }),
+);
+
+/* ------------------------------------------------------------- panelists -- */
+
+/**
+ * GET /api/consultations/:id/panelists
+ *
+ * Who else is sitting on this session. Anyone who can see the consultation can
+ * see its panel: a group facing a defense is entitled to know who is on it.
+ */
+app.get(
+  '/api/consultations/:id/panelists',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const consultation = await loadConsultationFor(req.profile, req.params.id);
+    const { rows } = await pool.query(
+      `select p.id, p.full_name, p.email, p.faculty_position, cp.role, cp.added_at
+         from public.consultation_panelists cp
+         join public.profiles p on p.id = cp.adviser_id
+        where cp.consultation_id = $1
+        order by (cp.role = 'chair') desc, p.full_name asc`,
+      [consultation.id],
+    );
+    res.json({ panelists: rows });
+  }),
+);
+
+/**
+ * POST /api/consultations/:id/panelists
+ * Body: { adviserId, role? }
+ *
+ * Only the lead adviser builds the panel. They own the slot the session sits
+ * in, and a panel a student could assemble would not be a panel.
+ */
+app.post(
+  '/api/consultations/:id/panelists',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const consultation = await loadConsultationFor(req.profile, req.params.id);
+    if (consultation.adviser_id !== req.profile.id) {
+      throw new HttpError(403, 'Only the lead adviser can add to the panel.');
+    }
+
+    const adviserId = String(req.body?.adviserId ?? '');
+    if (!UUID_RE.test(adviserId)) throw new HttpError(400, 'That adviser is not valid.');
+    if (adviserId === consultation.adviser_id) {
+      throw new HttpError(409, 'The lead adviser is already on the panel.');
+    }
+
+    const role = req.body?.role === 'chair' ? 'chair' : 'panelist';
+
+    const { rows: found } = await pool.query(
+      `select id, full_name, email, faculty_position from public.profiles
+        where id = $1 and role = 'adviser' and registration_completed_at is not null
+          and (department = $2 or department is null or $2 is null)
+        limit 1`,
+      [adviserId, req.profile.department ?? null],
+    );
+    if (!found.length) throw new HttpError(404, 'That adviser was not found in your department.');
+
+    await pool.query(
+      `insert into public.consultation_panelists (consultation_id, adviser_id, role, added_by)
+            values ($1, $2, $3, $4)
+       on conflict (consultation_id, adviser_id) do update set role = excluded.role`,
+      [consultation.id, adviserId, role, req.profile.id],
+    );
+
+    res.status(201).json({ panelist: { ...found[0], role } });
+  }),
+);
+
+/** DELETE /api/consultations/:id/panelists/:adviserId */
+app.delete(
+  '/api/consultations/:id/panelists/:adviserId',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const consultation = await loadConsultationFor(req.profile, req.params.id);
+    if (consultation.adviser_id !== req.profile.id) {
+      throw new HttpError(403, 'Only the lead adviser can change the panel.');
+    }
+    const adviserId = String(req.params.adviserId);
+    if (!UUID_RE.test(adviserId)) throw new HttpError(400, 'That adviser is not valid.');
+
+    await pool.query(
+      `delete from public.consultation_panelists
+        where consultation_id = $1 and adviser_id = $2`,
+      [consultation.id, adviserId],
+    );
+    res.json({ ok: true });
+  }),
+);
+
+/* -------------------------------------------------------------- feedback -- */
+
+/**
+ * POST /api/consultations/:id/feedback
+ * Body: { rating (1-5), comment? }
+ *
+ * Only a group member, and only once the session has actually happened. An
+ * adviser rating their own session would be marking their own work.
+ */
+app.post(
+  '/api/consultations/:id/feedback',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const consultation = await loadConsultationFor(req.profile, req.params.id);
+    if (req.profile.role === 'adviser') {
+      throw new HttpError(403, 'Feedback comes from the group.');
+    }
+    if (consultation.status !== 'completed') {
+      throw new HttpError(409, 'You can rate a session once it has been wrapped up.');
+    }
+
+    const rating = Number.parseInt(req.body?.rating, 10);
+    if (!Number.isFinite(rating) || rating < 1 || rating > 5) {
+      throw new HttpError(400, 'Give the session a rating from 1 to 5.');
+    }
+    const comment = String(req.body?.comment ?? '').trim().slice(0, 1000) || null;
+
+    const { rows } = await pool.query(
+      `insert into public.consultation_feedback (consultation_id, profile_id, rating, comment)
+            values ($1, $2, $3, $4)
+       on conflict (consultation_id, profile_id) do update
+              set rating = excluded.rating, comment = excluded.comment, created_at = now()
+         returning rating, comment, created_at`,
+      [consultation.id, req.profile.id, rating, comment],
+    );
+
+    res.json({ feedback: rows[0] });
+  }),
+);
+
+/**
+ * GET /api/consultations/:id/feedback
+ *
+ * A student sees their own answer. An adviser sees the average and the comments
+ * with no names on them: a student answering honestly should not be answering to
+ * the person they are rating.
+ */
+app.get(
+  '/api/consultations/:id/feedback',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const consultation = await loadConsultationFor(req.profile, req.params.id);
+
+    if (req.profile.role !== 'adviser') {
+      const { rows } = await pool.query(
+        `select rating, comment, created_at from public.consultation_feedback
+          where consultation_id = $1 and profile_id = $2 limit 1`,
+        [consultation.id, req.profile.id],
+      );
+      return res.json({ mine: rows[0] ?? null });
+    }
+
+    const { rows } = await pool.query(
+      `select count(*)::int as responses,
+              round(avg(rating)::numeric, 1)::float as average,
+              coalesce(
+                json_agg(comment order by created_at desc) filter (where comment is not null),
+                '[]'::json
+              ) as comments
+         from public.consultation_feedback
+        where consultation_id = $1`,
+      [consultation.id],
+    );
+
+    res.json({ summary: rows[0] });
+  }),
+);
+
+/* -------------------------------------------------------- activity trail -- */
+
+/**
+ * GET /api/consultations/:id/activity
+ *
+ * What has happened to this session, in order.
+ *
+ * Assembled from the columns the workflow already writes -- who proposed a move,
+ * who cancelled and why, when the adviser answered -- none of which had anywhere
+ * to be seen. There is no event table; there does not need to be, because every
+ * one of these transitions is already stamped.
+ */
+app.get(
+  '/api/consultations/:id/activity',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const consultation = await loadConsultationFor(req.profile, req.params.id);
+
+    const { rows } = await pool.query(
+      `select c.created_at, c.responded_at, c.status, c.decline_reason,
+              c.proposed_at, c.proposed_note, c.proposed_date,
+              c.cancelled_at, c.cancel_reason, c.completed_at,
+              cb.full_name as created_by_name,
+              pb.full_name as proposed_by_name,
+              xb.full_name as cancelled_by_name,
+              ab.full_name as adviser_name
+         from public.consultations c
+         left join public.profiles cb on cb.id = c.created_by
+         left join public.profiles pb on pb.id = c.proposed_by
+         left join public.profiles xb on xb.id = c.cancelled_by
+         left join public.profiles ab on ab.id = c.adviser_id
+        where c.id = $1
+        limit 1`,
+      [consultation.id],
+    );
+    const row = rows[0];
+    const events = [];
+
+    if (row.created_at) {
+      events.push({ at: row.created_at, kind: 'requested', who: row.created_by_name, detail: null });
+    }
+    if (row.responded_at) {
+      events.push({
+        at: row.responded_at,
+        kind: row.status === 'declined' ? 'declined' : 'approved',
+        who: row.adviser_name,
+        detail: row.decline_reason,
+      });
+    }
+    if (row.proposed_at) {
+      events.push({
+        at: row.proposed_at,
+        kind: 'proposed',
+        who: row.proposed_by_name,
+        detail: row.proposed_note,
+        when: row.proposed_date,
+      });
+    }
+    if (row.cancelled_at) {
+      events.push({
+        at: row.cancelled_at,
+        kind: 'cancelled',
+        who: row.cancelled_by_name,
+        detail: row.cancel_reason,
+      });
+    }
+    if (row.completed_at) {
+      events.push({ at: row.completed_at, kind: 'completed', who: row.adviser_name, detail: null });
+    }
+
+    events.sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+    res.json({ events });
+  }),
+);
+
+/* ---------------------------------------------------------------- search -- */
+
+/**
+ * GET /api/search?q=...
+ *
+ * One query across everything the caller may see.
+ *
+ * The dashboard used to filter the rows it had already loaded, which meant a
+ * search for a session from last term, or a task somebody has since ticked off,
+ * found nothing at all. This reaches the tables, so it finds what is actually
+ * there rather than what happens to be on screen.
+ */
+app.get(
+  '/api/search',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const term = String(req.query.q ?? '').trim();
+    if (term.length < 2) return res.json({ results: [] });
+
+    // ILIKE with both wildcards escaped, so a term containing % or _ searches
+    // for those characters rather than matching everything.
+    const pattern = `%${term.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+    const { id, role, group_name: groupName, group_id: groupId } = req.profile;
+    const args = [id, role, groupName, groupId, pattern];
+
+    const { rows: consultations } = await pool.query(
+      `select c.id, c.topic, c.group_name, c.meeting_date, c.status, c.location
+         from public.consultations c
+        where (
+                ($2 = 'adviser' and ${adviserVisibility('$1')})
+             or ($2 <> 'adviser' and ${groupVisibility({ creator: '$1', groupId: '$4', groupName: '$3' })})
+              )
+          and (c.topic ilike $5 or c.group_name ilike $5
+               or c.location ilike $5 or c.minutes ilike $5)
+        order by c.meeting_date desc
+        limit 8`,
+      args,
+    );
+
+    const { rows: tasks } = await pool.query(
+      `select a.id, a.task_description, a.status, a.due_date,
+              c.id as consultation_id, c.topic as consultation_topic
+         from public.action_items a
+         join public.consultations c on c.id = a.consultation_id
+        where (
+                ($2 = 'adviser' and ${adviserVisibility('$1')})
+             or ($2 <> 'adviser' and (a.assignee_id = $1 or ${groupVisibility({ creator: '$1', groupId: '$4', groupName: '$3' })}))
+              )
+          and a.task_description ilike $5
+        order by (a.status = 'pending') desc, a.created_at desc
+        limit 8`,
+      args,
+    );
+
+    const { rows: messages } = await pool.query(
+      `select m.id, m.body, m.created_at, c.id as consultation_id, c.topic,
+              p.full_name as sender_name
+         from public.consultation_messages m
+         join public.consultations c on c.id = m.consultation_id
+         left join public.profiles p on p.id = m.sender_id
+        where (
+                ($2 = 'adviser' and ${adviserVisibility('$1')})
+             or ($2 <> 'adviser' and ${groupVisibility({ creator: '$1', groupId: '$4', groupName: '$3' })})
+              )
+          and m.body ilike $5
+        order by m.created_at desc
+        limit 6`,
+      args,
+    );
+
+    // Groups: a student's own, an adviser's advised, a coordinator's department.
+    const { rows: groups } = await pool.query(
+      `select g.id, g.name, g.section
+         from public.thesis_groups g
+        where g.name ilike $2
+          and (
+               exists (select 1 from public.thesis_group_members m
+                        where m.group_id = g.id and m.profile_id = $1)
+            or g.adviser_id = $1
+            or exists (select 1 from public.consultations c
+                        where c.group_id = g.id and c.adviser_id = $1)
+            or ($3::boolean and g.department = $4)
+          )
+        order by g.name asc
+        limit 6`,
+      [id, pattern, Boolean(req.profile.is_coordinator), req.profile.department ?? null],
+    );
+
+    res.json({ results: { consultations, tasks, messages, groups } });
+  }),
+);
+
+/* ------------------------------------------------------------- calendar -- */
+
+/**
+ * GET /api/calendar?from=YYYY-MM-DD&to=YYYY-MM-DD
+ *
+ * Sessions in a date range, which is what a week or month view needs. The list
+ * endpoints answer "the next N", which cannot fill a grid.
+ *
+ * Capped at 62 days so a mistyped range cannot ask for a decade.
+ */
+app.get(
+  '/api/calendar',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const from = String(req.query.from ?? '').trim();
+    const to = String(req.query.to ?? '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+      throw new HttpError(400, 'Pass from and to as YYYY-MM-DD.');
+    }
+    const span = (new Date(`${to}T00:00:00Z`) - new Date(`${from}T00:00:00Z`)) / 86_400_000;
+    if (!Number.isFinite(span) || span < 0) throw new HttpError(400, 'That range runs backwards.');
+    if (span > 62) throw new HttpError(400, 'Ask for at most two months at a time.');
+
+    const { id, role, group_name: groupName, group_id: groupId } = req.profile;
+
+    const { rows } = await pool.query(
+      `select c.id, c.topic, c.group_name, c.location, c.meeting_date, c.status,
+              p.full_name as adviser_name,
+              (select count(*)::int from public.consultation_panelists cp
+                where cp.consultation_id = c.id) as panel_size
+         from public.consultations c
+         left join public.profiles p on p.id = c.adviser_id
+        where c.status in ('pending', 'scheduled', 'completed')
+          and c.meeting_date >= ($5::date at time zone $7)
+          and c.meeting_date <  (($6::date + 1) at time zone $7)
+          and (
+                ($2 = 'adviser' and ${adviserVisibility('$1')})
+             or ($2 <> 'adviser' and ${groupVisibility({ creator: '$1', groupId: '$4', groupName: '$3' })})
+          )
+        order by c.meeting_date asc`,
+      [id, role, groupName, groupId, from, to, CAMPUS_TIMEZONE],
+    );
+
+    res.json({ from, to, timezone: CAMPUS_TIMEZONE, consultations: rows });
+  }),
+);
+
+/* -------------------------------------------------- record submissions ---- */
+
+/**
+ * POST /api/record/submit
+ * Body: { group_id, note? }
+ *
+ * Freezes the record as it stands and files it.
+ *
+ * The record is generated from live rows, so it changes whenever anything
+ * behind it does. That is right for a working document and wrong for a
+ * submission: "this is what we handed in" is only a checkable claim if a copy
+ * was kept. The snapshot is the record's own JSON rather than a PDF -- a PDF
+ * needs a headless browser this deployment does not have, and would be no more
+ * trustworthy than the rows it came from. Printing is unchanged.
+ */
+app.post(
+  '/api/record/submit',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const groupId = String(req.body?.group_id ?? '').trim();
+    if (!UUID_RE.test(groupId)) throw new HttpError(400, 'Name the group whose record you are submitting.');
+
+    // Only the group itself hands its record in.
+    if (req.profile.group_id !== groupId) {
+      throw new HttpError(403, 'Only the group can submit its own record.');
+    }
+
+    const snapshot = req.body?.snapshot;
+    if (!snapshot || typeof snapshot !== 'object' || !Array.isArray(snapshot.sessions)) {
+      throw new HttpError(400, 'Nothing to submit.');
+    }
+    if (!snapshot.sessions.length) {
+      throw new HttpError(409, 'There are no sessions on this record yet.');
+    }
+
+    const note = String(req.body?.note ?? '').trim().slice(0, 500) || null;
+
+    const { rows } = await pool.query(
+      `insert into public.record_submissions
+              (group_id, submitted_by, session_count, note, snapshot)
+            values ($1, $2, $3, $4, $5)
+         returning id, submitted_at, session_count, note`,
+      [groupId, req.profile.id, snapshot.sessions.length, note, JSON.stringify(snapshot)],
+    );
+
+    res.status(201).json({ submission: rows[0] });
+  }),
+);
+
+/**
+ * GET /api/record/submissions?group_id=...
+ *
+ * The trail: every time this record was handed in, and by whom. Readable by the
+ * group and by whoever advises it.
+ */
+app.get(
+  '/api/record/submissions',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const groupId = String(req.query.group_id ?? '').trim();
+    if (!UUID_RE.test(groupId)) throw new HttpError(400, 'That group is not valid.');
+
+    const { rows: allowed } = await pool.query(
+      `select 1
+         from public.thesis_groups g
+        where g.id = $1
+          and (
+               exists (select 1 from public.thesis_group_members m
+                        where m.group_id = g.id and m.profile_id = $2)
+            or g.adviser_id = $2
+            or exists (select 1 from public.consultations c
+                        where c.group_id = g.id and c.adviser_id = $2)
+            or ($3::boolean and g.department = $4)
+          )
+        limit 1`,
+      [groupId, req.profile.id, Boolean(req.profile.is_coordinator), req.profile.department ?? null],
+    );
+    if (!allowed.length) throw new HttpError(403, 'That is not your group.');
+
+    const { rows } = await pool.query(
+      `select r.id, r.submitted_at, r.session_count, r.note,
+              p.full_name as submitted_by_name
+         from public.record_submissions r
+         left join public.profiles p on p.id = r.submitted_by
+        where r.group_id = $1
+        order by r.submitted_at desc
+        limit 20`,
+      [groupId],
+    );
+
+    res.json({ submissions: rows });
+  }),
+);
+
 /* ----------------------------------------------------------- attachments -- */
 
 const ATTACHMENT_BUCKET = 'consultation-attachments';
@@ -2723,16 +3579,25 @@ app.delete(
 /* ------------------------------------------------------------ milestones -- */
 
 /**
- * The capstone sequence, in order. Must match the check constraint on
- * public.group_milestones; the client owns the display labels.
+ * The sequence a group is measured against, as keys.
+ *
+ * Read from program_milestones rather than hard-coded: the five steps that used
+ * to live here describe one program, and a department that has defined its own
+ * gets those instead. The old list survives as the seeded fallback row set.
  */
-const MILESTONE_KEYS = [
-  'title_proposal',
-  'chapters_1_3',
-  'data_gathering',
-  'system_review',
-  'final_defense',
-];
+async function milestoneKeysFor(department) {
+  const sequence = await milestoneSequenceFor(department);
+  return sequence.map((item) => item.key);
+}
+
+/** Which department's sequence a group is held to. */
+async function departmentOfGroup(groupId) {
+  const { rows } = await pool.query(
+    `select department from public.thesis_groups where id = $1 limit 1`,
+    [groupId],
+  );
+  return rows[0]?.department ?? null;
+}
 
 /**
  * Which group's milestones this caller is asking about.
@@ -2784,7 +3649,11 @@ app.get(
   asyncRoute(async (req, res) => {
     const groupId = await resolveMilestoneGroup(req.profile, req.query.group);
     if (!groupId) {
-      return res.json({ groupId: null, order: MILESTONE_KEYS, milestones: [] });
+      return res.json({
+        groupId: null,
+        order: await milestoneKeysFor(req.profile.department),
+        milestones: [],
+      });
     }
 
     const { rows } = await pool.query(
@@ -2798,7 +3667,11 @@ app.get(
       [groupId],
     );
 
-    res.json({ groupId, order: MILESTONE_KEYS, milestones: rows });
+    res.json({
+      groupId,
+      order: await milestoneKeysFor(await departmentOfGroup(groupId)),
+      milestones: rows,
+    });
   }),
 );
 
@@ -2819,7 +3692,9 @@ app.put(
     }
 
     const milestone = String(req.params.milestone ?? '');
-    if (!MILESTONE_KEYS.includes(milestone)) {
+    // Validated against the group's own sequence, further down, once we know
+    // which group it is. Shape-checked here.
+    if (!/^[a-z0-9_]{2,40}$/.test(milestone)) {
       throw new HttpError(400, 'That is not a capstone milestone.');
     }
 
@@ -2828,6 +3703,11 @@ app.put(
       throw new HttpError(400, 'Name the group this milestone belongs to.');
     }
     await assertAdvisesGroup(req.profile, groupId);
+
+    const allowed = await milestoneKeysFor(await departmentOfGroup(groupId));
+    if (!allowed.includes(milestone)) {
+      throw new HttpError(400, 'That milestone is not in this group\'s capstone sequence.');
+    }
 
     const completed = req.body?.completed !== false;
 
@@ -2895,9 +3775,15 @@ app.post(
     const attendance = normalizeAttendance(req.body?.attendance);
     // Optional: the session that finished a capstone milestone signs it off in
     // the same breath, because the wrap-up is the only moment anyone knows.
-    const milestone = MILESTONE_KEYS.includes(String(req.body?.milestone ?? ''))
-      ? String(req.body.milestone)
-      : null;
+    const requestedMilestone = String(req.body?.milestone ?? '');
+    const milestone =
+      requestedMilestone && consultation.group_id
+        ? (await milestoneKeysFor(await departmentOfGroup(consultation.group_id))).includes(
+            requestedMilestone,
+          )
+          ? requestedMilestone
+          : null
+        : null;
 
     const client = await pool.connect();
     try {
@@ -3084,7 +3970,7 @@ app.patch(
         where c.id = a.consultation_id
           and a.id = $5
           and (
-                ($2 = 'adviser' and c.adviser_id = $1)
+                ($2 = 'adviser' and ${adviserVisibility('$1')})
              or ($2 <> 'adviser' and (a.assignee_id = $1 or ${groupVisibility({ creator: '$1', groupId: '$6', groupName: '$3' })}))
           )
     returning a.id, a.task_description, a.status`,

@@ -5,8 +5,10 @@ import {
   ClipboardList,
   History,
   ListChecks,
+  Loader2,
   MessageSquare,
   Sparkles,
+  Star,
 } from 'lucide-react';
 import { api } from '../lib/api.js';
 
@@ -30,6 +32,141 @@ const fullFormatter = new Intl.DateTimeFormat(undefined, {
  * here, flagged, because it happened whether or not anyone wrote it down, and
  * surfacing it is how it gets finished.
  */
+/**
+ * A completed session's rating, from the group.
+ *
+ * Only appears once a session has been wrapped up, because until then there is
+ * nothing to rate. The adviser never sees who said what -- the API returns them
+ * an average and unattributed comments -- so a student is not answering to the
+ * person they are rating.
+ */
+function SessionFeedback({ token, consultationId, isAdviser }) {
+  const [mine, setMine] = useState(null);
+  const [summary, setSummary] = useState(null);
+  const [open, setOpen] = useState(false);
+  const [rating, setRating] = useState(0);
+  const [comment, setComment] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    const controller = new AbortController();
+    api(`/consultations/${consultationId}/feedback`, { token, signal: controller.signal })
+      .then((result) => {
+        setMine(result.mine ?? null);
+        setSummary(result.summary ?? null);
+        if (result.mine) {
+          setRating(result.mine.rating);
+          setComment(result.mine.comment ?? '');
+        }
+      })
+      // A session is still readable without its rating.
+      .catch(() => {});
+    return () => controller.abort();
+  }, [consultationId, token]);
+
+  async function save() {
+    if (!rating || saving) return;
+    setSaving(true);
+    setError('');
+    try {
+      const result = await api(`/consultations/${consultationId}/feedback`, {
+        method: 'POST',
+        token,
+        body: { rating, comment: comment.trim() || null },
+      });
+      setMine(result.feedback);
+      setOpen(false);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (isAdviser) {
+    if (!summary?.responses) return null;
+    return (
+      <div className="mt-3 rounded-lg border border-ink-200 bg-ink-50 px-3.5 py-2.5">
+        <p className="flex items-center gap-1.5 text-[12px] font-medium text-ink-700">
+          <Star className="h-3.5 w-3.5 text-gold-500" aria-hidden="true" />
+          {summary.average} out of 5
+          <span className="font-normal text-ink-500">
+            from {summary.responses} {summary.responses === 1 ? 'reply' : 'replies'}
+          </span>
+        </p>
+        {(summary.comments ?? []).map((text, index) => (
+          <p key={index} className="mt-1.5 text-[12px] italic text-ink-600">
+            &ldquo;{text}&rdquo;
+          </p>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-3">
+      {!open ? (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-ink-200 px-3 py-1.5 text-xs font-semibold text-ink-700 transition hover:border-gold-300 hover:bg-gold-50"
+        >
+          <Star className="h-3.5 w-3.5 text-gold-500" aria-hidden="true" />
+          {mine ? `You rated this ${mine.rating}/5` : 'Rate this session'}
+        </button>
+      ) : (
+        <div className="rounded-lg border border-ink-200 bg-ink-50 p-3.5">
+          <p className="text-[12px] font-medium text-ink-700">How was this consultation?</p>
+          <div className="mt-2 flex gap-1">
+            {[1, 2, 3, 4, 5].map((value) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setRating(value)}
+                aria-label={`${value} out of 5`}
+                aria-pressed={rating === value}
+                className={`rounded-md p-1 transition ${
+                  value <= rating ? 'text-gold-500' : 'text-ink-300 hover:text-ink-400'
+                }`}
+              >
+                <Star className="h-5 w-5" fill={value <= rating ? 'currentColor' : 'none'} aria-hidden="true" />
+              </button>
+            ))}
+          </div>
+          <textarea
+            rows={2}
+            maxLength={1000}
+            value={comment}
+            onChange={(event) => setComment(event.target.value)}
+            placeholder="Anything worth saying about it? (optional)"
+            className="mt-2 w-full resize-none rounded-lg border border-ink-200 bg-white px-3 py-2 text-[13px] text-ink-900 transition focus:border-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-700/15"
+          />
+          {error ? <p className="mt-1.5 text-xs font-medium text-rose-700">{error}</p> : null}
+          <div className="mt-2 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setOpen(false)}
+              className="rounded-lg border border-ink-200 bg-white px-3 py-1.5 text-xs font-semibold text-ink-700"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={save}
+              disabled={!rating || saving}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-700 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-brand-600 disabled:opacity-60"
+            >
+              {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : null}
+              Save
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function HistoryView({
   token,
   isAdviser,
@@ -102,6 +239,7 @@ export default function HistoryView({
             <li key={session.id} className="animate-rise" style={{ '--delay': `${index * 40}ms` }}>
               <SessionRow
                 session={session}
+                token={token}
                 isAdviser={isAdviser}
                 unread={unreadByConsultation?.[session.id] ?? 0}
                 onOpenThread={() => onOpenThread(session.id)}
@@ -115,7 +253,7 @@ export default function HistoryView({
   );
 }
 
-function SessionRow({ session, isAdviser, unread, onOpenThread, onWrapUp }) {
+function SessionRow({ session, token, isAdviser, unread, onOpenThread, onWrapUp }) {
   const when = new Date(session.meeting_date);
   const completed = session.status === 'completed';
 
@@ -224,6 +362,15 @@ function SessionRow({ session, isAdviser, unread, onOpenThread, onWrapUp }) {
               </button>
             ) : null}
           </div>
+
+          {/* Only a session that happened can be rated. */}
+          {completed ? (
+            <SessionFeedback
+              token={token}
+              consultationId={session.id}
+              isAdviser={isAdviser}
+            />
+          ) : null}
         </div>
       </div>
     </article>

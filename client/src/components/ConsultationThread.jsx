@@ -1,15 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
+  CalendarClock,
   CalendarDays,
+  Check,
   Clock,
   Download,
+  History,
   Loader2,
   MapPin,
   MessageSquare,
   Paperclip,
+  Plus,
   Send,
+  UserMinus,
+  Users,
   X,
+  XCircle,
 } from 'lucide-react';
 import { api } from '../lib/api.js';
 
@@ -69,6 +76,10 @@ export default function ConsultationThread({
   // change while a thread is open, so the poll leaves them alone.
   const [attachments, setAttachments] = useState([]);
   const [openingFile, setOpeningFile] = useState(null);
+  // Who else is sitting on this session, and what has happened to it.
+  const [panelists, setPanelists] = useState([]);
+  const [activity, setActivity] = useState([]);
+  const [showActivity, setShowActivity] = useState(false);
 
   const endRef = useRef(null);
   const composerRef = useRef(null);
@@ -97,6 +108,26 @@ export default function ConsultationThread({
   useEffect(() => {
     load();
   }, [load]);
+
+  /*
+   * The panel and the history, read once when the thread opens. Neither moves
+   * while somebody is reading, so the six-second poll leaves them alone.
+   */
+  useEffect(() => {
+    const controller = new AbortController();
+    Promise.all([
+      api(`/consultations/${consultationId}/panelists`, { token, signal: controller.signal })
+        .then((result) => result.panelists ?? [])
+        .catch(() => []),
+      api(`/consultations/${consultationId}/activity`, { token, signal: controller.signal })
+        .then((result) => result.events ?? [])
+        .catch(() => []),
+    ]).then(([panel, events]) => {
+      setPanelists(panel);
+      setActivity(events);
+    });
+    return () => controller.abort();
+  }, [consultationId, token]);
 
   /* The attachment listing, read once when the thread opens. */
   useEffect(() => {
@@ -261,6 +292,75 @@ export default function ConsultationThread({
           <div className="border-b border-rose-100 bg-rose-50 px-5 py-3 text-sm text-rose-800">
             <span className="font-bold">Declined: </span>
             {consultation.decline_reason}
+          </div>
+        ) : null}
+
+        {/* --------------------------------------------------------- panel */}
+        {panelists.length > 0 ? (
+          <div className="border-b border-ink-200 bg-white px-5 py-3">
+            <p className="flex items-center gap-1.5 text-[12px] font-medium text-ink-700">
+              <Users className="h-3.5 w-3.5 text-ink-400" aria-hidden="true" />
+              Panel of {panelists.length + 1}
+            </p>
+            <ul className="mt-1.5 flex flex-wrap gap-1.5">
+              {panelists.map((person) => (
+                <li
+                  key={person.id}
+                  className="rounded-full border border-ink-200 bg-ink-50 px-2.5 py-1 text-[12px] text-ink-700"
+                >
+                  {person.full_name}
+                  {person.role === 'chair' ? (
+                    <span className="ml-1 font-semibold text-brand-700">chair</span>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
+        {/* ------------------------------------------------------ activity */}
+        {activity.length > 1 ? (
+          <div className="border-b border-ink-200 bg-white px-5 py-2.5">
+            <button
+              type="button"
+              onClick={() => setShowActivity((value) => !value)}
+              aria-expanded={showActivity}
+              className="flex w-full items-center gap-1.5 text-[12px] font-medium text-ink-700 transition hover:text-ink-900"
+            >
+              <History className="h-3.5 w-3.5 text-ink-400" aria-hidden="true" />
+              {showActivity ? 'Hide' : 'Show'} history
+              <span className="text-ink-400">({activity.length})</span>
+            </button>
+
+            {showActivity ? (
+              <ol className="mt-2.5 space-y-2">
+                {activity.map((event, index) => (
+                  <li key={`${event.kind}-${index}`} className="flex gap-2.5">
+                    <span
+                      className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full ${
+                        EVENT_TINT[event.kind] ?? 'bg-ink-100 text-ink-600'
+                      }`}
+                    >
+                      {eventIcon(event.kind)}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[13px] text-ink-900">
+                        {EVENT_LABEL[event.kind] ?? event.kind}
+                        {event.who ? <span className="text-ink-500"> by {event.who}</span> : null}
+                      </p>
+                      {event.detail ? (
+                        <p className="mt-0.5 text-[12px] italic text-ink-500">
+                          &ldquo;{event.detail}&rdquo;
+                        </p>
+                      ) : null}
+                      <p className="mt-0.5 text-[11px] text-ink-400">
+                        {meetingFormatter.format(new Date(event.at))}
+                      </p>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            ) : null}
           </div>
         ) : null}
 
@@ -435,4 +535,32 @@ function EmptyThread() {
       </p>
     </div>
   );
+}
+
+/* The workflow's own transitions, which had nowhere to be seen until now. */
+const EVENT_LABEL = {
+  requested: 'Requested',
+  approved: 'Approved',
+  declined: 'Declined',
+  proposed: 'A new time was offered',
+  cancelled: 'Called off',
+  completed: 'Wrapped up',
+};
+
+const EVENT_TINT = {
+  requested: 'bg-info-50 text-info-600',
+  approved: 'bg-emerald-50 text-emerald-600',
+  declined: 'bg-rose-50 text-rose-600',
+  proposed: 'bg-gold-50 text-gold-700',
+  cancelled: 'bg-ink-100 text-ink-600',
+  completed: 'bg-emerald-50 text-emerald-600',
+};
+
+function eventIcon(kind) {
+  const props = { className: 'h-3 w-3', 'aria-hidden': 'true' };
+  if (kind === 'approved' || kind === 'completed') return <Check {...props} />;
+  if (kind === 'declined') return <XCircle {...props} />;
+  if (kind === 'proposed') return <CalendarClock {...props} />;
+  if (kind === 'cancelled') return <X {...props} />;
+  return <Plus {...props} />;
 }

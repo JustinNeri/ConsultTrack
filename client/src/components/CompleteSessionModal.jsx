@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { MILESTONES } from '../lib/milestones.js';
+import { FALLBACK_MILESTONES } from '../lib/milestones.js';
 import {
   AlertCircle,
   CalendarDays,
@@ -58,6 +58,9 @@ export default function CompleteSessionModal({ token, consultationId, onClose, o
   const [takeAttendance, setTakeAttendance] = useState(false);
   // Which capstone milestone, if any, this session signed off.
   const [milestone, setMilestone] = useState('');
+  // The steps this group's department uses. Falls back to the seeded five if
+  // the call fails, so the picker is never empty.
+  const [steps, setSteps] = useState(FALLBACK_MILESTONES);
   const [absent, setAbsent] = useState(() => new Set());
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -78,6 +81,18 @@ export default function CompleteSessionModal({ token, consultationId, onClose, o
 
     return () => controller.abort();
   }, [consultationId, token]);
+
+  /* The steps this department measures its groups against. */
+  useEffect(() => {
+    const controller = new AbortController();
+    api('/program-milestones', { token, signal: controller.signal })
+      .then((result) => {
+        if (result.milestones?.length) setSteps(result.milestones);
+      })
+      // The seeded five are already in state, so a failure changes nothing.
+      .catch(() => {});
+    return () => controller.abort();
+  }, [token]);
 
   useEffect(() => {
     function handleKeyDown(event) {
@@ -225,7 +240,7 @@ export default function CompleteSessionModal({ token, consultationId, onClose, o
             </p>
 
             <div className="mt-3 flex flex-wrap gap-2">
-              {MILESTONES.map((item) => {
+              {steps.map((item) => {
                 const picked = milestone === item.key;
                 return (
                   <button

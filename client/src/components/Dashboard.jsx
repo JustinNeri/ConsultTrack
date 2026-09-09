@@ -20,6 +20,8 @@ import {
   LayoutDashboard,
   ClipboardList,
   Users2,
+  CalendarRange,
+  Building2,
   ListChecks,
   Lightbulb,
   Pencil,
@@ -46,9 +48,11 @@ import HistoryView from './HistoryView.jsx';
 import RecordView from './RecordView.jsx';
 import ProposeTimeModal from './ProposeTimeModal.jsx';
 import GroupView from './GroupView.jsx';
+import CalendarView from './CalendarView.jsx';
+import CoordinatorView from './CoordinatorView.jsx';
 import { api } from '../lib/api.js';
 import { toDateInput, upcomingDatesFor } from '../lib/schedule.js';
-import { MILESTONES, MILESTONE_ACTIONS, readMilestones } from '../lib/milestones.js';
+import { MILESTONE_ACTIONS, readMilestones } from '../lib/milestones.js';
 import { DEPARTMENTS, FACULTY_POSITIONS, YEAR_LEVELS } from '../lib/hau.js';
 
 /** "2h ago", "3d ago", then a date once it stops being recent. */
@@ -69,7 +73,7 @@ function relativeTime(value) {
  * The sidebar only lists views this app can actually render, grouped the way
  * the design groups them: what you do daily, what you hand in, and your account.
  */
-function navSections(isAdviser) {
+function navSections(isAdviser, isCoordinator = false) {
   return [
     {
       label: 'Main',
@@ -83,13 +87,26 @@ function navSections(isAdviser) {
         ...(isAdviser ? [] : [{ key: 'group', label: 'My group', icon: Users2 }]),
         // Only an adviser has hours to publish; a student books out of them.
         ...(isAdviser
-          ? [{ key: 'availability', label: 'Consultation hours', icon: CalendarClock }]
+          ? [
+              { key: 'calendar', label: 'Calendar', icon: CalendarRange },
+              { key: 'availability', label: 'Consultation hours', icon: CalendarClock },
+            ]
           : []),
         // Where a session goes once it has happened, and where an adviser
         // finishes wrapping one up.
         { key: 'history', label: 'Past sessions', icon: History },
       ],
     },
+    // A coordinator is an adviser who also runs the program, so their views are
+    // an extra section rather than a different sidebar.
+    ...(isCoordinator
+      ? [
+          {
+            label: 'Program',
+            items: [{ key: 'coordinator', label: 'Capstone program', icon: Building2 }],
+          },
+        ]
+      : []),
     {
       label: 'Records',
       // The printable log a group hands in. Everything on it is already in the
@@ -104,8 +121,8 @@ function navSections(isAdviser) {
 }
 
 /** Flat list, for anything that just needs to look a view up by key. */
-function navItems(isAdviser) {
-  return navSections(isAdviser).flatMap((section) => section.items);
+function navItems(isAdviser, isCoordinator = false) {
+  return navSections(isAdviser, isCoordinator).flatMap((section) => section.items);
 }
 
 const dateFormatter = new Intl.DateTimeFormat(undefined, {
@@ -177,6 +194,8 @@ export default function Dashboard({ session, onSignOut, onProfileChanged }) {
   const [milestoneRows, setMilestoneRows] = useState([]);
   // The student's thesis group, or null while they have not joined one.
   const [group, setGroup] = useState(null);
+  // The capstone sequence their department is measured against.
+  const [milestoneSequence, setMilestoneSequence] = useState([]);
   // Bumped to make the history view re-read itself after a wrap-up.
   const [historyKey, setHistoryKey] = useState(0);
   const [view, setView] = useState('overview');
@@ -186,6 +205,7 @@ export default function Dashboard({ session, onSignOut, onProfileChanged }) {
   const profile = session.profile ?? {};
   const token = session.access_token;
   const isAdviser = profile.role === 'adviser';
+  const isCoordinator = Boolean(profile.is_coordinator);
 
   const refreshUnread = useCallback(async () => {
     try {
@@ -215,6 +235,7 @@ export default function Dashboard({ session, onSignOut, onProfileChanged }) {
           advisersResult,
           milestonesResult,
           groupResult,
+          sequenceResult,
         ] = await Promise.all([
           api('/consultations/next', { token }),
           api('/tasks/pending', { token }),
@@ -234,6 +255,8 @@ export default function Dashboard({ session, onSignOut, onProfileChanged }) {
           isAdviser
             ? Promise.resolve(null)
             : api('/thesis-groups/mine', { token }).catch(() => null),
+          // Which steps this department uses. Rows now, not a constant.
+          api('/program-milestones', { token }).catch(() => null),
         ]);
         setConsultation(nextResult.consultation);
         setTasks(tasksResult.tasks ?? []);
@@ -244,6 +267,7 @@ export default function Dashboard({ session, onSignOut, onProfileChanged }) {
         setDirectory(advisersResult?.advisers ?? []);
         setMilestoneRows(milestonesResult?.milestones ?? []);
         setGroup(groupResult?.group ?? null);
+        setMilestoneSequence(sequenceResult?.milestones ?? []);
         // The signed-in profile carries group_name and section, both of which
         // move when a group does. Cheap to re-read, and wrong if we do not.
         api('/me', { token })
@@ -602,86 +626,44 @@ export default function Dashboard({ session, onSignOut, onProfileChanged }) {
     );
   }, [history, isAdviser, requests, unread.threads]);
 
-  /**
-   * Everything the search box can actually find.
+  /*
+   * Search now asks the server.
    *
-   * The bar says "search anything", so it searches every record this dashboard
-   * already holds rather than only the action items it used to filter. It is
-   * deliberately client-side: these are the same rows the page is rendering, so
-   * there is nothing to fetch and nothing that can go stale between the list and
-   * what a result opens.
+   * It used to filter the rows this dashboard had already loaded, which meant a
+   * search for a session from last term, a message, or a task somebody had since
+   * ticked off found nothing at all -- the box said "search anything" and meant
+   * "search what is on screen". One endpoint, scoped by the same visibility
+   * rules as everything else.
    */
-  const searchResults = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    if (needle.length < 2) return [];
+  const [searchResults, setSearchResults] = useState([]);
 
-    const hit = (...parts) => parts.filter(Boolean).join(' ').toLowerCase().includes(needle);
-    const found = [];
-
-    for (const task of tasks) {
-      if (hit(task.task_description, task.consultation_topic, task.assignee_name)) {
-        found.push({
-          id: `task-${task.id}`,
-          group: 'Action items',
-          icon: ListChecks,
-          title: task.task_description,
-          detail: task.consultation_topic,
-          open: () => goTo('tasks'),
-        });
-      }
+  useEffect(() => {
+    const term = query.trim();
+    if (term.length < 2) {
+      setSearchResults([]);
+      return undefined;
     }
 
-    const upcoming = [consultation, ...schedule].filter(Boolean);
-    const seen = new Set();
-    for (const item of upcoming) {
-      if (seen.has(item.id)) continue;
-      seen.add(item.id);
-      if (hit(item.topic, item.group_name, item.location, item.adviser_name)) {
-        found.push({
-          id: `consultation-${item.id}`,
-          group: 'Upcoming',
-          icon: CalendarDays,
-          title: item.topic,
-          detail: [item.group_name, dateFormatter.format(new Date(item.meeting_date))]
-            .filter(Boolean)
-            .join(' \u00b7 '),
-          open: () => setThreadId(item.id),
+    const controller = new AbortController();
+    // Typing is faster than the network; without this every keystroke races.
+    const timer = setTimeout(() => {
+      api(`/search?q=${encodeURIComponent(term)}`, { token, signal: controller.signal })
+        .then((result) => setSearchResults(flattenSearch(result.results, { goTo, setThreadId })))
+        .catch((err) => {
+          if (err.name !== 'AbortError') setSearchResults([]);
         });
-      }
-    }
+    }, 220);
 
-    for (const request of requests) {
-      if (hit(request.topic, request.group_name, request.requester_name, request.adviser_name)) {
-        found.push({
-          id: `request-${request.id}`,
-          group: 'Requests',
-          icon: Inbox,
-          title: request.topic,
-          detail: [request.group_name, request.status].filter(Boolean).join(' \u00b7 '),
-          open: () => goTo('requests'),
-        });
-      }
-    }
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [query, token]);
 
-    for (const session of history) {
-      if (hit(session.topic, session.group_name, session.minutes, session.adviser_name)) {
-        found.push({
-          id: `history-${session.id}`,
-          group: 'Past sessions',
-          icon: History,
-          title: session.topic,
-          detail: [session.group_name, shortDateFormatter.format(new Date(session.meeting_date))]
-            .filter(Boolean)
-            .join(' \u00b7 '),
-          open: () => goTo('history'),
-        });
-      }
-    }
-
-    return found.slice(0, 8);
-  }, [consultation, history, query, requests, schedule, tasks]);
-
-  const milestones = useMemo(() => readMilestones(milestoneRows), [milestoneRows]);
+  const milestones = useMemo(
+    () => readMilestones(milestoneRows, milestoneSequence),
+    [milestoneRows, milestoneSequence],
+  );
   const progress = milestones.progress;
   const nextMilestone = milestones.next;
   const firstName = profile.first_name || (profile.full_name || '').split(',').pop()?.trim();
@@ -693,6 +675,7 @@ export default function Dashboard({ session, onSignOut, onProfileChanged }) {
         <Sidebar
           view={view}
           isAdviser={isAdviser}
+          isCoordinator={isCoordinator}
           requestCount={noticeCount}
           taskCount={tasks.length}
           onNavigate={goTo}
@@ -709,6 +692,7 @@ export default function Dashboard({ session, onSignOut, onProfileChanged }) {
           <TopBar
             view={view}
             profile={profile}
+            isCoordinator={isCoordinator}
             query={query}
             onSearch={handleSearch}
             results={searchResults}
@@ -785,6 +769,7 @@ export default function Dashboard({ session, onSignOut, onProfileChanged }) {
                 progress={progress}
                 nextMilestone={nextMilestone}
                 completedMilestones={milestones.completed}
+                milestoneSteps={milestones.steps}
                 hourBlocks={hourBlocks}
                 onSetHours={() => goTo('availability')}
                 unreadByConsultation={unreadByConsultation}
@@ -854,6 +839,18 @@ export default function Dashboard({ session, onSignOut, onProfileChanged }) {
 
             {view === 'record' ? (
               <RecordView token={token} isAdviser={isAdviser} />
+            ) : null}
+
+            {view === 'calendar' && isAdviser ? (
+              <CalendarView
+                token={token}
+                onOpenConsultation={setThreadId}
+                onBook={startBooking}
+              />
+            ) : null}
+
+            {view === 'coordinator' && isCoordinator ? (
+              <CoordinatorView token={token} profile={profile} />
             ) : null}
 
             {view === 'group' && !isAdviser ? (
@@ -965,7 +962,18 @@ export default function Dashboard({ session, onSignOut, onProfileChanged }) {
 
 /* ---------------------------------------------------------------- sidebar -- */
 
-function Sidebar({ view, isAdviser, requestCount, taskCount, onNavigate, onSignOut, onBook, open, onClose }) {
+function Sidebar({
+  view,
+  isAdviser,
+  isCoordinator,
+  requestCount,
+  taskCount,
+  onNavigate,
+  onSignOut,
+  onBook,
+  open,
+  onClose,
+}) {
   const counts = { requests: requestCount, tasks: taskCount };
 
   return (
@@ -1021,7 +1029,7 @@ function Sidebar({ view, isAdviser, requestCount, taskCount, onNavigate, onSignO
         </button>
 
         <nav className="scrollbar-slim mt-6 flex flex-1 flex-col gap-5 overflow-y-auto">
-          {navSections(isAdviser).map((section) => (
+          {navSections(isAdviser, isCoordinator).map((section) => (
             <div key={section.label}>
               <p className="mb-1.5 px-2.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-brand-300/60">
                 {section.label}
@@ -1192,6 +1200,7 @@ function HauCrest() {
 function TopBar({
   view,
   profile,
+  isCoordinator,
   query,
   onSearch,
   results,
@@ -1208,7 +1217,8 @@ function TopBar({
 }) {
   // The bar names the page wherever the sidebar is off-screen, which is the
   // only place the current view is not already marked.
-  const title = navItems(isAdviser).find((item) => item.key === view)?.label ?? 'Dashboard';
+  const title =
+    navItems(isAdviser, isCoordinator).find((item) => item.key === view)?.label ?? 'Dashboard';
 
   return (
     <header className="no-print sticky top-0 z-30 flex items-center gap-3 border-b border-ink-200 bg-white px-4 py-2.5 sm:px-6">
@@ -1273,11 +1283,70 @@ function TopBar({
 }
 
 /**
+ * Turns the endpoint's four lists into the flat, grouped rows the panel draws.
+ *
+ * Kept out of the component so the shape of a result -- what it is called, what
+ * opening it does -- lives in one place rather than in a render.
+ */
+function flattenSearch(results, { goTo, setThreadId }) {
+  if (!results) return [];
+  const rows = [];
+
+  for (const item of results.consultations ?? []) {
+    rows.push({
+      id: `consultation-${item.id}`,
+      group: item.status === 'completed' ? 'Past sessions' : 'Consultations',
+      icon: CalendarDays,
+      title: item.topic,
+      detail: [item.group_name, dateFormatter.format(new Date(item.meeting_date))]
+        .filter(Boolean)
+        .join(' \u00b7 '),
+      open: () => setThreadId(item.id),
+    });
+  }
+
+  for (const item of results.tasks ?? []) {
+    rows.push({
+      id: `task-${item.id}`,
+      group: 'Action items',
+      icon: ListChecks,
+      title: item.task_description,
+      detail: [item.consultation_topic, item.status === 'resolved' ? 'resolved' : null]
+        .filter(Boolean)
+        .join(' \u00b7 '),
+      open: () => goTo('tasks'),
+    });
+  }
+
+  for (const item of results.messages ?? []) {
+    rows.push({
+      id: `message-${item.id}`,
+      group: 'Messages',
+      icon: MessagesSquare,
+      title: item.body,
+      detail: [item.sender_name, item.topic].filter(Boolean).join(' \u00b7 '),
+      open: () => setThreadId(item.consultation_id),
+    });
+  }
+
+  for (const item of results.groups ?? []) {
+    rows.push({
+      id: `group-${item.id}`,
+      group: 'Groups',
+      icon: Users2,
+      title: item.name,
+      detail: item.section,
+      open: () => goTo('group'),
+    });
+  }
+
+  return rows;
+}
+
+/**
  * The search box and its results.
  *
- * The bar promised "search anything" while only filtering the action-items
- * list, which meant a search for a group name or a past session found nothing.
- * Now every match opens the thing it names.
+ * Every match opens the thing it names.
  */
 function GlobalSearch({ query, onSearch, results }) {
   const [open, setOpen] = useState(false);
@@ -1529,6 +1598,7 @@ function OverviewView({
   progress,
   nextMilestone,
   completedMilestones,
+  milestoneSteps,
   hourBlocks,
   onSetHours,
   unreadByConsultation,
@@ -1709,7 +1779,11 @@ function OverviewView({
               onOpenThread={onOpenThread}
             />
           ) : (
-            <MilestonePanel progress={progress} completed={completedMilestones} />
+            <MilestonePanel
+              progress={progress}
+              completed={completedMilestones}
+              steps={milestoneSteps}
+            />
           )}
         </div>
 
@@ -3000,7 +3074,7 @@ function RequestsView({
  * with a fill behind it, so the eye lands on "where are we" before it reads
  * anything else.
  */
-function MilestonePanel({ progress, completed }) {
+function MilestonePanel({ progress, completed, steps }) {
   return (
     <section className="animate-rise flex h-full flex-col rounded-2xl border border-ink-200 bg-white p-5">
       <div className="mb-4 flex items-center justify-between gap-3">
@@ -3011,13 +3085,13 @@ function MilestonePanel({ progress, completed }) {
       </div>
 
       <ol>
-        {MILESTONES.map((milestone, index) => {
+        {steps.map((milestone, index) => {
           const done = completed.has(milestone.key);
           // The step in progress is the first unfinished one, so a milestone
           // signed off out of order does not leave two rows highlighted.
           const current =
-            !done && MILESTONES.slice(0, index).every((earlier) => completed.has(earlier.key));
-          const last = index === MILESTONES.length - 1;
+            !done && steps.slice(0, index).every((earlier) => completed.has(earlier.key));
+          const last = index === steps.length - 1;
           return (
             <li key={milestone.key} className="flex gap-3">
               <div className="flex flex-col items-center">

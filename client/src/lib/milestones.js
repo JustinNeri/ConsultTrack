@@ -1,15 +1,16 @@
 /**
  * The capstone milestone sequence.
  *
- * Shared because two screens disagree about it at their peril: the student
- * dashboard renders the tracker, and the adviser's wrap-up is what moves it.
+ * The steps used to be this constant. They are now rows in `program_milestones`,
+ * keyed by department, because five steps that fit a computing capstone do not
+ * fit a nursing one. What survives here is the fallback the database is seeded
+ * with, the canned advice attached to those particular steps, and the arithmetic
+ * every screen does over whichever sequence applies.
  *
- * The keys are what `public.group_milestones` stores and are fixed by a check
- * constraint; the labels are ours alone, so rewording a step here cannot orphan
- * a group's recorded progress. Adding a step is a migration, because it changes
- * what every group is measured against.
+ * Keys are what the database stores; labels are display only, so renaming a step
+ * in the coordinator's editor never orphans a group's recorded progress.
  */
-export const MILESTONES = [
+export const FALLBACK_MILESTONES = [
   { key: 'title_proposal', label: 'Title Proposal' },
   { key: 'chapters_1_3', label: 'Chapters 1-3' },
   { key: 'data_gathering', label: 'Data Gathering' },
@@ -18,8 +19,11 @@ export const MILESTONES = [
 ];
 
 /**
- * What a milestone asks of a group. The same for every group at that stage,
- * which is why this is a constant and the progress beside it is not.
+ * What a milestone asks of a group.
+ *
+ * Only the seeded steps have advice: a coordinator inventing "Ethics Clearance"
+ * has not told us what it involves, and guessing would be worse than saying
+ * nothing. A step with no entry simply shows no checklist.
  */
 export const MILESTONE_ACTIONS = {
   title_proposal: [
@@ -53,18 +57,24 @@ export const MILESTONE_ACTIONS = {
  * Turns the rows the API returns into what the milestone panels need.
  *
  * `completed` is a set of keys rather than a count, because an adviser can sign
- * these off out of order -- a group can have their title approved and their
- * data gathered while chapters 1-3 are still in revision, and a count would
- * quietly promote the wrong step to "in progress".
+ * these off out of order -- a group can have their title approved and their data
+ * gathered while chapters 1-3 are still in revision, and a count would quietly
+ * promote the wrong step to "in progress".
+ *
+ * `sequence` is whichever set the group's department uses; it falls back to the
+ * seeded five so a screen that has not loaded it yet still renders something
+ * truthful rather than an empty tracker.
  */
-export function readMilestones(rows) {
+export function readMilestones(rows, sequence) {
+  const steps = sequence?.length ? sequence : FALLBACK_MILESTONES;
   const completed = new Set((rows ?? []).map((row) => row.milestone));
-  const reached = MILESTONES.filter((item) => completed.has(item.key)).length;
-  const next = MILESTONES.find((item) => !completed.has(item.key)) ?? null;
+  const reached = steps.filter((item) => completed.has(item.key)).length;
+  const next = steps.find((item) => !completed.has(item.key)) ?? null;
 
   return {
+    steps,
     completed,
-    progress: Math.round((reached / MILESTONES.length) * 100),
+    progress: steps.length ? Math.round((reached / steps.length) * 100) : 0,
     next,
   };
 }

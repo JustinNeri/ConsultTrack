@@ -5,12 +5,14 @@ import {
   Circle,
   FileText,
   GraduationCap,
+  History,
   Loader2,
   Printer,
+  Send,
   Users,
 } from 'lucide-react';
 import { api } from '../lib/api.js';
-import { MILESTONES } from '../lib/milestones.js';
+import { FALLBACK_MILESTONES } from '../lib/milestones.js';
 
 const sessionDateFormatter = new Intl.DateTimeFormat(undefined, {
   month: 'short',
@@ -191,6 +193,10 @@ function RecordSheet({ record, completed, token, isAdviser }) {
     <>
       {isAdviser && record?.group_id ? (
         <MilestoneEditor token={token} groupId={record.group_id} groupName={record.group} />
+      ) : null}
+
+      {record?.group_id ? (
+        <SubmitRecord token={token} record={record} isAdviser={isAdviser} />
       ) : null}
 
     <article className="print-sheet rounded-xl bg-white p-8 border border-ink-200 sm:p-10">
@@ -417,6 +423,8 @@ function EmptyRecord({ isAdviser, hasGroups }) {
  */
 function MilestoneEditor({ token, groupId, groupName }) {
   const [completed, setCompleted] = useState(() => new Set());
+  // The department's own sequence, which is rows now rather than a constant.
+  const [steps, setSteps] = useState(FALLBACK_MILESTONES);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
@@ -424,10 +432,16 @@ function MilestoneEditor({ token, groupId, groupName }) {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    api(`/milestones?group=${encodeURIComponent(groupId)}`, { token })
-      .then((result) => {
+    Promise.all([
+      api(`/milestones?group=${encodeURIComponent(groupId)}`, { token }),
+      // Labels and order. The seeded five stay in state if this fails, so the
+      // control is never empty.
+      api('/program-milestones', { token }).catch(() => null),
+    ])
+      .then(([result, sequence]) => {
         if (cancelled) return;
         setCompleted(new Set((result.milestones ?? []).map((row) => row.milestone)));
+        if (sequence?.milestones?.length) setSteps(sequence.milestones);
         setError('');
       })
       .catch((err) => {
@@ -465,14 +479,14 @@ function MilestoneEditor({ token, groupId, groupName }) {
     }
   }
 
-  const reached = MILESTONES.filter((item) => completed.has(item.key)).length;
+  const reached = steps.filter((item) => completed.has(item.key)).length;
 
   return (
     <section className="no-print mb-6 rounded-xl border border-ink-200 bg-white p-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-[16px] font-semibold text-ink-900">Capstone milestones</p>
         <span className="tnum rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
-          {Math.round((reached / MILESTONES.length) * 100)}% complete
+          {steps.length ? Math.round((reached / steps.length) * 100) : 0}% complete
         </span>
       </div>
       <p className="mt-1 text-[13px] text-ink-500">
@@ -487,7 +501,7 @@ function MilestoneEditor({ token, groupId, groupName }) {
       ) : null}
 
       <div className="mt-4 flex flex-wrap gap-2">
-        {MILESTONES.map((item) => {
+        {steps.map((item) => {
           const done = completed.has(item.key);
           return (
             <button
@@ -517,3 +531,172 @@ function MilestoneEditor({ token, groupId, groupName }) {
     </section>
   );
 }
+
+/**
+ * Handing the record in, and the trail of every time it was.
+ *
+ * The record is drawn from live rows, so it changes whenever anything behind it
+ * changes. That is right for a working document and wrong for a submission:
+ * "this is what we handed in" is only checkable if a copy was kept. Submitting
+ * freezes the record as it stands and files it under the group.
+ *
+ * Printing is unchanged. This is the durable copy, not a replacement for it.
+ */
+function SubmitRecord({ token, record, isAdviser }) {
+  const [submissions, setSubmissions] = useState([]);
+  const [open, setOpen] = useState(false);
+  const [note, setNote] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      const result = await api(
+        `/record/submissions?group_id=${encodeURIComponent(record.group_id)}`,
+        { token },
+      );
+      setSubmissions(result.submissions ?? []);
+    } catch {
+      // The record reads fine without its trail.
+    }
+  }, [record.group_id, token]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function submit() {
+    if (saving) return;
+    setSaving(true);
+    setError('');
+    try {
+      await api('/record/submit', {
+        method: 'POST',
+        token,
+        body: { group_id: record.group_id, note: note.trim() || null, snapshot: record },
+      });
+      setNote('');
+      setOpen(false);
+      await load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const latest = submissions[0];
+
+  return (
+    <section className="no-print mb-6 rounded-xl border border-ink-200 bg-white p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[16px] font-semibold text-ink-900">Submission</p>
+          <p className="mt-1 text-[13px] text-ink-500">
+            {latest
+              ? `Last handed in ${submissionDateFormatter.format(new Date(latest.submitted_at))} by ${
+                  latest.submitted_by_name ?? 'a member'
+                }, with ${latest.session_count} ${
+                  latest.session_count === 1 ? 'session' : 'sessions'
+                }.`
+              : 'This record has not been handed in yet. Submitting keeps a frozen copy of it as it stands.'}
+          </p>
+        </div>
+
+        {/* Only the group hands its own record in. */}
+        {!isAdviser && !open ? (
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            disabled={!record.sessions?.length}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-brand-700 px-3.5 py-2 text-[13px] font-semibold text-white transition hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <Send className="h-4 w-4" aria-hidden="true" />
+            {latest ? 'Submit again' : 'Submit record'}
+          </button>
+        ) : null}
+      </div>
+
+      {error ? (
+        <p
+          role="alert"
+          className="mt-3 flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[13px] font-medium text-rose-700"
+        >
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          {error}
+        </p>
+      ) : null}
+
+      {open ? (
+        <div className="mt-4 rounded-lg border border-ink-200 bg-ink-50 p-3.5">
+          <label htmlFor="submit-note" className="block text-[12px] font-medium text-ink-700">
+            Note for your adviser (optional)
+          </label>
+          <input
+            id="submit-note"
+            maxLength={500}
+            value={note}
+            onChange={(event) => setNote(event.target.value)}
+            placeholder="Submitting for the final defense requirement"
+            className="mt-1.5 w-full rounded-lg border border-ink-200 bg-white px-3 py-2 text-[13px] text-ink-900 transition focus:border-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-700/15"
+          />
+          <p className="mt-2 text-[12px] text-ink-500">
+            Freezes {record.sessions?.length ?? 0}{' '}
+            {record.sessions?.length === 1 ? 'session' : 'sessions'} exactly as they read now.
+          </p>
+          <div className="mt-3 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setOpen(false)}
+              className="rounded-lg border border-ink-200 bg-white px-3 py-1.5 text-[13px] font-semibold text-ink-700"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={submit}
+              disabled={saving}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-700 px-3.5 py-1.5 text-[13px] font-semibold text-white transition hover:bg-brand-600 disabled:opacity-60"
+            >
+              {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : null}
+              Hand it in
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {submissions.length > 0 ? (
+        <ul className="mt-4 space-y-2 border-t border-ink-200 pt-3">
+          {submissions.map((item) => (
+            <li key={item.id} className="flex items-start gap-2.5 text-[13px]">
+              <History className="mt-0.5 h-4 w-4 shrink-0 text-ink-400" aria-hidden="true" />
+              <div className="min-w-0 flex-1">
+                <p className="text-ink-900">
+                  {submissionDateFormatter.format(new Date(item.submitted_at))}
+                  <span className="text-ink-500">
+                    {' '}
+                    &middot; {item.submitted_by_name ?? 'a member'} &middot; {item.session_count}{' '}
+                    {item.session_count === 1 ? 'session' : 'sessions'}
+                  </span>
+                </p>
+                {item.note ? (
+                  <p className="mt-0.5 text-[12px] italic text-ink-500">
+                    &ldquo;{item.note}&rdquo;
+                  </p>
+                ) : null}
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </section>
+  );
+}
+
+const submissionDateFormatter = new Intl.DateTimeFormat(undefined, {
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit',
+});
