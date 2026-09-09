@@ -988,6 +988,7 @@ app.get(
               a.status,
               a.created_at,
               a.consultation_id,
+              to_char(a.due_date, 'YYYY-MM-DD') as due_date,
               c.topic        as consultation_topic,
               c.meeting_date as consultation_date,
               c.group_name,
@@ -1100,6 +1101,379 @@ app.post(
     res.status(201).json({ consultation: rows[0] });
   }),
 );
+
+/* ------------------------------------------------- threads and wrap-up --- */
+
+/*
+ * Everything below hangs off one consultation, so everything below shares one
+ * access rule -- the same predicate `upcomingConsultations`, the request inbox
+ * and the task list already use: an adviser reaches the consultations they
+ * advise, a student the ones booked for their group or created by them.
+ *
+ * That is also why threads are scoped to a consultation rather than to a
+ * student/adviser pair. There is no standing group-to-adviser link in this
+ * schema, so a pair has no natural scope; a consultation carries both sides and
+ * its own permission rule already.
+ */
+
+/** The consultation, if this caller is allowed to see it. Throws otherwise. */
+async function loadConsultationFor(profile, consultationId) {
+  if (!UUID_RE.test(String(consultationId))) {
+    throw new HttpError(400, 'That consultation is not valid.');
+  }
+
+  const { rows } = await pool.query(
+    `select c.id, c.adviser_id, c.group_name, c.topic, c.location, c.meeting_date,
+            c.status, c.created_by, c.created_at, c.decline_reason,
+            c.minutes, c.completed_at,
+            p.full_name as adviser_name,
+            p.email     as adviser_email,
+            s.full_name as requester_name,
+            s.email     as requester_email
+       from public.consultations c
+       left join public.profiles p on p.id = c.adviser_id
+       left join public.profiles s on s.id = c.created_by
+      where c.id = $1
+        and (
+              ($3 = 'adviser' and c.adviser_id = $2)
+           or ($3 <> 'adviser' and (c.group_name = $4 or c.created_by = $2))
+        )
+      limit 1`,
+    [consultationId, profile.id, profile.role, profile.group_name],
+  );
+
+  if (!rows[0]) throw new HttpError(404, 'That consultation was not found.');
+  return rows[0];
+}
+
+/**
+ * GET /api/consultations/:id/messages
+ *
+ * The thread, oldest first, plus the consultation it belongs to and the people
+ * an action item could be assigned to. Opening a thread marks it read up to the
+ * newest message *returned* rather than to `now()`, so a message that lands
+ * mid-request is still unread next time instead of being silently skipped.
+ */
+app.get(
+  '/api/consultations/:id/messages',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const consultation = await loadConsultationFor(req.profile, req.params.id);
+
+    const { rows: messages } = await pool.query(
+      `select m.id, m.body, m.created_at, m.sender_id,
+              p.full_name as sender_name,
+              p.role      as sender_role
+         from public.consultation_messages m
+         left join public.profiles p on p.id = m.sender_id
+        where m.consultation_id = $1
+        order by m.created_at asc, m.id asc`,
+      [consultation.id],
+    );
+
+    const readThrough = messages.length
+      ? messages[messages.length - 1].created_at
+      : new Date();
+
+    await pool.query(
+      `insert into public.consultation_reads (consultation_id, profile_id, last_read_at)
+            values ($1, $2, $3)
+       on conflict (consultation_id, profile_id) do update
+              set last_read_at = greatest(public.consultation_reads.last_read_at,
+                                          excluded.last_read_at)`,
+      [consultation.id, req.profile.id, readThrough],
+    );
+
+    res.json({ consultation, messages });
+  }),
+);
+
+/**
+ * POST /api/consultations/:id/messages
+ * Body: { body }
+ */
+app.post(
+  '/api/consultations/:id/messages',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const consultation = await loadConsultationFor(req.profile, req.params.id);
+
+    const body = String(req.body?.body ?? '').trim();
+    if (!body) throw new HttpError(400, 'Write a message first.');
+    if (body.length > 2000) {
+      throw new HttpError(400, 'That message is too long (max 2000 characters).');
+    }
+
+    const { rows } = await pool.query(
+      `insert into public.consultation_messages (consultation_id, sender_id, body)
+            values ($1, $2, $3)
+         returning id, body, created_at, sender_id`,
+      [consultation.id, req.profile.id, body],
+    );
+
+    // Your own message is read the moment you send it.
+    await pool.query(
+      `insert into public.consultation_reads (consultation_id, profile_id, last_read_at)
+            values ($1, $2, $3)
+       on conflict (consultation_id, profile_id) do update
+              set last_read_at = greatest(public.consultation_reads.last_read_at,
+                                          excluded.last_read_at)`,
+      [consultation.id, req.profile.id, rows[0].created_at],
+    );
+
+    res.status(201).json({
+      message: {
+        ...rows[0],
+        sender_name: req.profile.full_name,
+        sender_role: req.profile.role,
+      },
+    });
+  }),
+);
+
+/**
+ * GET /api/messages/unread
+ *
+ * The badge. A message counts as unread when somebody else sent it after the
+ * caller last read that thread; a thread never opened counts every message.
+ */
+app.get(
+  '/api/messages/unread',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const { id, role, group_name: groupName } = req.profile;
+
+    const { rows } = await pool.query(
+      `select c.id as consultation_id, c.topic, count(m.id)::int as unread
+         from public.consultations c
+         join public.consultation_messages m on m.consultation_id = c.id
+         left join public.consultation_reads r
+                on r.consultation_id = c.id and r.profile_id = $1
+        where (
+                ($2 = 'adviser' and c.adviser_id = $1)
+             or ($2 <> 'adviser' and (c.group_name = $3 or c.created_by = $1))
+              )
+          and m.sender_id <> $1
+          and (r.last_read_at is null or m.created_at > r.last_read_at)
+        group by c.id, c.topic
+        order by count(m.id) desc`,
+      [id, role, groupName],
+    );
+
+    res.json({
+      total: rows.reduce((sum, row) => sum + row.unread, 0),
+      threads: rows,
+    });
+  }),
+);
+
+/**
+ * GET /api/consultations/history?limit=20
+ *
+ * Sessions that have already happened, newest first. A session the adviser
+ * never wrapped up still appears -- it took place whether or not anyone wrote it
+ * down, and surfacing it is how it gets finished.
+ */
+app.get(
+  '/api/consultations/history',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const requested = Number.parseInt(req.query.limit, 10);
+    const limit = Number.isFinite(requested) ? Math.min(Math.max(requested, 1), 50) : 20;
+
+    const { id, role, group_name: groupName } = req.profile;
+
+    const { rows } = await pool.query(
+      `select c.id, c.group_name, c.topic, c.location, c.meeting_date, c.status,
+              c.minutes, c.completed_at,
+              p.full_name as adviser_name,
+              p.email     as adviser_email,
+              (select count(*)::int from public.action_items a
+                where a.consultation_id = c.id)                     as task_count,
+              (select count(*)::int from public.consultation_messages m
+                where m.consultation_id = c.id)                     as message_count
+         from public.consultations c
+         left join public.profiles p on p.id = c.adviser_id
+        where c.status in ('scheduled', 'completed')
+          and (c.completed_at is not null or c.meeting_date < now())
+          and (
+                ($2 = 'adviser' and c.adviser_id = $1)
+             or ($2 <> 'adviser' and (c.group_name = $3 or c.created_by = $1))
+          )
+        order by c.meeting_date desc
+        limit $4`,
+      [id, role, groupName, limit],
+    );
+
+    res.json({ consultations: rows });
+  }),
+);
+
+/**
+ * GET /api/consultations/:id
+ *
+ * One consultation, plus the people an action item could be assigned to. There
+ * is no group membership table, so a group is whoever declares that group_name,
+ * plus whoever made the booking -- who may never have set theirs.
+ */
+app.get(
+  '/api/consultations/:id',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const consultation = await loadConsultationFor(req.profile, req.params.id);
+
+    const { rows: members } = await pool.query(
+      `select id, full_name, email
+         from public.profiles
+        where role = 'student'
+          and (($1::text is not null and group_name = $1) or id = $2)
+        order by full_name asc`,
+      [consultation.group_name, consultation.created_by],
+    );
+
+    res.json({ consultation, members });
+  }),
+);
+
+/**
+ * POST /api/consultations/:id/complete
+ * Body: { minutes?, tasks?: [{ description, assignee_id?, due_date? }] }
+ *
+ * The wrap-up, and the only thing in the system that creates an action item.
+ * The adviser ran the session, so the adviser closes it: status becomes
+ * 'completed' (which drops it out of every "upcoming" query) and the tasks
+ * agreed in the room become rows the group can tick off.
+ *
+ * One transaction, because a half-written wrap-up -- session closed, tasks lost
+ * -- cannot be recovered from the UI.
+ */
+app.post(
+  '/api/consultations/:id/complete',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    if (req.profile.role !== 'adviser') {
+      throw new HttpError(403, 'Only the adviser can complete a consultation.');
+    }
+
+    const consultation = await loadConsultationFor(req.profile, req.params.id);
+    if (consultation.status !== 'scheduled') {
+      throw new HttpError(
+        409,
+        consultation.status === 'completed'
+          ? 'That session is already wrapped up.'
+          : 'Only a scheduled session can be completed.',
+      );
+    }
+
+    const minutes = String(req.body?.minutes ?? '').trim().slice(0, 5000) || null;
+    const tasks = normalizeTasks(req.body?.tasks);
+
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+
+      const { rows } = await client.query(
+        `update public.consultations
+            set status = 'completed', completed_at = now(), minutes = $2
+          where id = $1 and status = 'scheduled'
+      returning id, topic, status, minutes, completed_at`,
+        [consultation.id, minutes],
+      );
+      // Somebody else closed it between the check above and here.
+      if (!rows[0]) throw new HttpError(409, 'That session is already wrapped up.');
+
+      const created = [];
+      for (const task of tasks) {
+        const { rows: item } = await client.query(
+          `insert into public.action_items
+                  (consultation_id, task_description, assignee_id, due_date)
+                values ($1, $2, $3, $4)
+             returning id, task_description, assignee_id, status,
+                       to_char(due_date, 'YYYY-MM-DD') as due_date`,
+          [consultation.id, task.description, task.assigneeId, task.dueDate],
+        );
+        created.push(item[0]);
+      }
+
+      await client.query('commit');
+      res.json({ consultation: rows[0], tasks: created });
+    } catch (err) {
+      await client.query('rollback');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }),
+);
+
+/**
+ * POST /api/consultations/:id/tasks
+ * Body: { description, assignee_id?, due_date? }
+ *
+ * One more action item, after the fact. Wrapping up is the usual way they get
+ * created, but something always comes up afterwards.
+ */
+app.post(
+  '/api/consultations/:id/tasks',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    if (req.profile.role !== 'adviser') {
+      throw new HttpError(403, 'Only the adviser can raise an action item.');
+    }
+
+    const consultation = await loadConsultationFor(req.profile, req.params.id);
+    const [task] = normalizeTasks([
+      {
+        description: req.body?.description,
+        assignee_id: req.body?.assignee_id,
+        due_date: req.body?.due_date,
+      },
+    ]);
+    if (!task) throw new HttpError(400, 'Describe the action item first.');
+
+    const { rows } = await pool.query(
+      `insert into public.action_items
+              (consultation_id, task_description, assignee_id, due_date)
+            values ($1, $2, $3, $4)
+         returning id, task_description, assignee_id, status, created_at,
+                   to_char(due_date, 'YYYY-MM-DD') as due_date`,
+      [consultation.id, task.description, task.assigneeId, task.dueDate],
+    );
+
+    res.status(201).json({ task: rows[0] });
+  }),
+);
+
+/**
+ * Validates the action items coming out of a wrap-up form, dropping blank rows
+ * so an untouched spare input does not become an empty task.
+ */
+function normalizeTasks(input) {
+  if (!Array.isArray(input)) return [];
+
+  return input
+    .map((task) => {
+      const description = String(task?.description ?? '').trim();
+      if (!description) return null;
+      if (description.length > 500) {
+        throw new HttpError(400, 'An action item is too long (max 500 characters).');
+      }
+
+      const assigneeId = task?.assignee_id ? String(task.assignee_id) : null;
+      if (assigneeId && !UUID_RE.test(assigneeId)) {
+        throw new HttpError(400, 'That assignee is not valid.');
+      }
+
+      const dueDate = String(task?.due_date ?? '').trim() || null;
+      if (dueDate && !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) {
+        throw new HttpError(400, 'A due date must look like 2026-09-16.');
+      }
+
+      return { description, assigneeId, dueDate };
+    })
+    .filter(Boolean)
+    .slice(0, 20);
+}
 
 /**
  * PATCH /api/tasks/:id

@@ -13,14 +13,17 @@ import {
   Circle,
   Clock,
   GraduationCap,
+  History,
   Hourglass,
   Inbox,
   LayoutDashboard,
+  ClipboardList,
   ListChecks,
   Loader2,
   LogOut,
   Mail,
   MapPin,
+  MessageSquare,
   Menu,
   RefreshCw,
   Search,
@@ -33,6 +36,9 @@ import {
 } from 'lucide-react';
 import BookingModal from './BookingModal.jsx';
 import AvailabilityView from './AvailabilityView.jsx';
+import ConsultationThread from './ConsultationThread.jsx';
+import CompleteSessionModal from './CompleteSessionModal.jsx';
+import HistoryView from './HistoryView.jsx';
 import { api } from '../lib/api.js';
 
 /**
@@ -59,6 +65,9 @@ function navItems(isAdviser) {
       ? [{ key: 'availability', label: 'Consultation hours', icon: CalendarClock }]
       : []),
     { key: 'tasks', label: 'Action items', icon: ListChecks },
+    // Where a session goes once it has happened, and where an adviser finishes
+    // wrapping one up.
+    { key: 'history', label: 'Past sessions', icon: History },
     { key: 'profile', label: 'My profile', icon: UserRound },
   ];
 }
@@ -101,6 +110,12 @@ export default function Dashboard({ session, onSignOut }) {
   const [notice, setNotice] = useState('');
   const [busyTaskId, setBusyTaskId] = useState(null);
   const [bookingOpen, setBookingOpen] = useState(false);
+  // Which consultation's thread is open, and which one is being wrapped up.
+  const [threadId, setThreadId] = useState(null);
+  const [wrapUpId, setWrapUpId] = useState(null);
+  const [unread, setUnread] = useState({ total: 0, threads: [] });
+  // Bumped to make the history view re-read itself after a wrap-up.
+  const [historyKey, setHistoryKey] = useState(0);
   const [view, setView] = useState('overview');
   const [query, setQuery] = useState('');
   const [navOpen, setNavOpen] = useState(false);
@@ -108,6 +123,15 @@ export default function Dashboard({ session, onSignOut }) {
   const profile = session.profile ?? {};
   const token = session.access_token;
   const isAdviser = profile.role === 'adviser';
+
+  const refreshUnread = useCallback(async () => {
+    try {
+      const result = await api('/messages/unread', { token });
+      setUnread({ total: result.total ?? 0, threads: result.threads ?? [] });
+    } catch {
+      /* The badge is not worth surfacing an error for. */
+    }
+  }, [token]);
 
   const loadDashboard = useCallback(
     async ({ silent = false } = {}) => {
@@ -131,6 +155,7 @@ export default function Dashboard({ session, onSignOut }) {
         setRequests(requestsResult.requests ?? []);
         setSchedule(scheduleResult?.consultations ?? []);
         setHourBlocks(hoursResult ? (hoursResult.availability ?? []).length : null);
+        refreshUnread();
       } catch (err) {
         if (err.status === 401) {
           onSignOut();
@@ -142,7 +167,7 @@ export default function Dashboard({ session, onSignOut }) {
         setRefreshing(false);
       }
     },
-    [isAdviser, onSignOut, token],
+    [isAdviser, onSignOut, refreshUnread, token],
   );
 
   useEffect(() => {
@@ -235,6 +260,13 @@ export default function Dashboard({ session, onSignOut }) {
   );
   const noticeCount = isAdviser ? pendingRequests.length : requests.length;
 
+  // Per-consultation counts, so each card can badge its own thread.
+  const unreadByConsultation = useMemo(
+    () =>
+      Object.fromEntries(unread.threads.map((thread) => [thread.consultation_id, thread.unread])),
+    [unread.threads],
+  );
+
   const progress = Math.round((COMPLETED_MILESTONES / MILESTONES.length) * 100);
   const nextMilestone = MILESTONES[COMPLETED_MILESTONES] ?? 'All milestones complete';
   const firstName = profile.first_name || (profile.full_name || '').split(',').pop()?.trim();
@@ -268,6 +300,14 @@ export default function Dashboard({ session, onSignOut }) {
             onRefresh={() => loadDashboard({ silent: true })}
             onBell={() => goTo('requests')}
             onOpenNav={() => setNavOpen(true)}
+            unreadTotal={unread.total}
+            // The busiest thread is the one worth opening first; the list is
+            // already ordered by unread count.
+            onOpenMessages={() => {
+              const busiest = unread.threads[0];
+              if (busiest) setThreadId(busiest.consultation_id);
+              else goTo('history');
+            }}
           />
 
           <main className="scrollbar-slim flex-1 overflow-y-auto bg-ink-50/70 px-4 py-6 sm:px-7 sm:py-8">
@@ -326,6 +366,9 @@ export default function Dashboard({ session, onSignOut }) {
                 nextMilestone={nextMilestone}
                 hourBlocks={hourBlocks}
                 onSetHours={() => goTo('availability')}
+                unreadByConsultation={unreadByConsultation}
+                onOpenThread={setThreadId}
+                onWrapUp={setWrapUpId}
               />
             ) : null}
 
@@ -337,6 +380,8 @@ export default function Dashboard({ session, onSignOut }) {
                 busyRequestId={busyRequestId}
                 onDecide={decideRequest}
                 onBook={() => setBookingOpen(true)}
+                unreadByConsultation={unreadByConsultation}
+                onOpenThread={setThreadId}
               />
             ) : null}
 
@@ -360,10 +405,53 @@ export default function Dashboard({ session, onSignOut }) {
               />
             ) : null}
 
+            {view === 'history' ? (
+              <HistoryView
+                token={token}
+                isAdviser={isAdviser}
+                unreadByConsultation={unreadByConsultation}
+                onOpenThread={setThreadId}
+                onWrapUp={setWrapUpId}
+                reloadKey={historyKey}
+              />
+            ) : null}
+
             {view === 'profile' ? <ProfileView profile={profile} onSignOut={onSignOut} /> : null}
           </main>
         </div>
       </div>
+
+      {threadId ? (
+        <ConsultationThread
+          token={token}
+          consultationId={threadId}
+          profile={profile}
+          onClose={() => setThreadId(null)}
+          onReadChanged={refreshUnread}
+        />
+      ) : null}
+
+      {wrapUpId ? (
+        <CompleteSessionModal
+          token={token}
+          consultationId={wrapUpId}
+          onClose={() => setWrapUpId(null)}
+          onCompleted={(result) => {
+            setWrapUpId(null);
+            setError('');
+            const count = result?.tasks?.length ?? 0;
+            setNotice(
+              count > 0
+                ? `Session wrapped up - ${count} action ${count === 1 ? 'item' : 'items'} sent to the group.`
+                : 'Session wrapped up and moved to your past sessions.',
+            );
+            // The session leaves the upcoming schedule and the new action items
+            // arrive, so both the dashboard and the history list are now stale.
+            setHistoryKey((key) => key + 1);
+            loadDashboard({ silent: true });
+          }}
+        />
+      ) : null}
 
       {bookingOpen ? (
         <BookingModal
@@ -529,6 +617,8 @@ function TopBar({
   onRefresh,
   onBell,
   onOpenNav,
+  unreadTotal,
+  onOpenMessages,
 }) {
   const subtitle = (
     profile.role === 'adviser'
@@ -573,6 +663,26 @@ function TopBar({
           className="rounded-xl p-2.5 text-ink-500 transition hover:bg-ink-100 hover:text-ink-900 disabled:opacity-50"
         >
           <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} aria-hidden="true" />
+        </button>
+
+        {/* Unread messages, separate from the bell: the bell is about requests
+            waiting on a decision, this is about somebody talking to you. */}
+        <button
+          type="button"
+          onClick={onOpenMessages}
+          aria-label={
+            unreadTotal === 0
+              ? 'No unread messages'
+              : `${unreadTotal} unread ${unreadTotal === 1 ? 'message' : 'messages'}`
+          }
+          className="relative rounded-xl p-2.5 text-ink-500 transition hover:bg-ink-100 hover:text-ink-900"
+        >
+          <MessageSquare className="h-4 w-4" aria-hidden="true" />
+          {unreadTotal > 0 ? (
+            <span className="animate-ping-badge absolute right-1 top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-emerald-600 px-1 text-[9px] font-bold text-white ring-2 ring-white">
+              {unreadTotal > 9 ? '9+' : unreadTotal}
+            </span>
+          ) : null}
         </button>
 
         {/* The bell is the consultation-request notification: for an adviser,
@@ -655,6 +765,9 @@ function OverviewView({
   nextMilestone,
   hourBlocks,
   onSetHours,
+  unreadByConsultation,
+  onOpenThread,
+  onWrapUp,
 }) {
   const meetingDate = consultation ? new Date(consultation.meeting_date) : null;
   const daysAway = meetingDate
@@ -772,6 +885,8 @@ function OverviewView({
                     isAdviser={isAdviser}
                     busy={busyRequestId === request.id}
                     onDecide={onDecide}
+                    unread={unreadByConsultation?.[request.id] ?? 0}
+                    onOpenThread={onOpenThread}
                   />
                 ))}
               </div>
@@ -788,6 +903,9 @@ function OverviewView({
                 countdown={countdown}
                 isAdviser={isAdviser}
                 onBook={onBook}
+                unread={unreadByConsultation?.[consultation?.id] ?? 0}
+                onOpenThread={onOpenThread}
+                onWrapUp={onWrapUp}
               />
             )}
           </section>
@@ -833,7 +951,13 @@ function OverviewView({
 
         <div className="space-y-6">
           {isAdviser ? (
-            <SchedulePanel schedule={schedule} loading={loading} onBook={onBook} />
+            <SchedulePanel
+              schedule={schedule}
+              loading={loading}
+              onBook={onBook}
+              unreadByConsultation={unreadByConsultation}
+              onOpenThread={onOpenThread}
+            />
           ) : (
             <>
               <MilestonePanel progress={progress} />
@@ -984,6 +1108,31 @@ function StatTile({ icon: Icon, tone, label, value, hint, highlighted = false, d
   );
 }
 
+/**
+ * Opens the thread for one consultation, carrying its unread count.
+ *
+ * On a request card this is the reply channel a decline never had: the
+ * adviser's reason is one sentence with nowhere to answer it, so "try Thursday"
+ * used to end the conversation rather than continue it.
+ */
+function ThreadButton({ unread = 0, onClick, label = 'Messages' }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex items-center gap-1.5 rounded-xl border border-ink-200 px-3.5 py-2 text-xs font-bold text-ink-700 transition hover:border-brand-300 hover:bg-brand-50/50 hover:text-brand-700"
+    >
+      <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
+      {label}
+      {unread > 0 ? (
+        <span className="ml-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-brand-600 px-1 text-[9px] font-bold text-white">
+          {unread > 9 ? '9+' : unread}
+        </span>
+      ) : null}
+    </button>
+  );
+}
+
 function SectionHeading({ title, action }) {
   return (
     <div className="mb-4 flex items-center justify-between gap-3">
@@ -995,7 +1144,15 @@ function SectionHeading({ title, action }) {
 
 /* ----------------------------------------------------- consultation card -- */
 
-function ConsultationCard({ consultation, countdown, isAdviser, onBook }) {
+function ConsultationCard({
+  consultation,
+  countdown,
+  isAdviser,
+  onBook,
+  unread = 0,
+  onOpenThread,
+  onWrapUp,
+}) {
   if (!consultation) {
     return (
       <div className="rounded-2xl border border-dashed border-ink-300 bg-white px-6 py-12 text-center shadow-card">
@@ -1047,6 +1204,21 @@ function ConsultationCard({ consultation, countdown, isAdviser, onBook }) {
           value={consultation.location || 'To be announced'}
         />
       </dl>
+
+      <div className="mt-4 flex flex-wrap items-center gap-2.5 border-t border-ink-100 pt-4">
+        <ThreadButton unread={unread} onClick={() => onOpenThread(consultation.id)} />
+        {/* The adviser ran the session, so the adviser closes it. */}
+        {isAdviser ? (
+          <button
+            type="button"
+            onClick={() => onWrapUp(consultation.id)}
+            className="ml-auto inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-emerald-700 active:scale-[0.99]"
+          >
+            <ClipboardList className="h-3.5 w-3.5" aria-hidden="true" />
+            Wrap up
+          </button>
+        ) : null}
+      </div>
     </article>
   );
 }
@@ -1073,7 +1245,7 @@ function Detail({ icon: Icon, label, value }) {
  * The student sees the same request as a status: waiting, or declined with the
  * adviser's note.
  */
-function RequestCard({ request, isAdviser, busy, onDecide }) {
+function RequestCard({ request, isAdviser, busy, onDecide, unread = 0, onOpenThread }) {
   const [declining, setDeclining] = useState(false);
   const [reason, setReason] = useState('');
 
@@ -1156,6 +1328,16 @@ function RequestCard({ request, isAdviser, busy, onDecide }) {
         </p>
       ) : null}
 
+      {onOpenThread ? (
+        <div className="mt-4 flex flex-wrap items-center gap-2.5">
+          <ThreadButton
+            unread={unread}
+            onClick={() => onOpenThread(request.id)}
+            label={declined ? 'Reply' : 'Messages'}
+          />
+        </div>
+      ) : null}
+
       {/* ------------------------------------------------ the decision --- */}
       {isAdviser && request.status === 'pending' ? (
         declining ? (
@@ -1230,7 +1412,16 @@ function RequestCard({ request, isAdviser, busy, onDecide }) {
   );
 }
 
-function RequestsView({ loading, isAdviser, requests, busyRequestId, onDecide, onBook }) {
+function RequestsView({
+  loading,
+  isAdviser,
+  requests,
+  busyRequestId,
+  onDecide,
+  onBook,
+  unreadByConsultation,
+  onOpenThread,
+}) {
   const pending = requests.filter((request) => request.status === 'pending').length;
 
   return (
@@ -1285,6 +1476,8 @@ function RequestsView({ loading, isAdviser, requests, busyRequestId, onDecide, o
               isAdviser={isAdviser}
               busy={busyRequestId === request.id}
               onDecide={onDecide}
+              unread={unreadByConsultation?.[request.id] ?? 0}
+              onOpenThread={onOpenThread}
             />
           ))}
         </div>
@@ -1366,7 +1559,7 @@ function MilestonePanel({ progress }) {
   );
 }
 
-function SchedulePanel({ schedule, loading, onBook }) {
+function SchedulePanel({ schedule, loading, onBook, unreadByConsultation, onOpenThread }) {
   if (loading) return <div className="h-64 skeleton rounded-2xl" />;
 
   return (
@@ -1390,21 +1583,35 @@ function SchedulePanel({ schedule, loading, onBook }) {
         <ol className="mt-4 space-y-3">
           {schedule.map((item) => {
             const when = new Date(item.meeting_date);
+            const unread = unreadByConsultation?.[item.id] ?? 0;
             return (
-              <li key={item.id} className="flex gap-3">
-                <div className="flex h-12 w-12 shrink-0 flex-col items-center justify-center rounded-xl bg-brand-50 leading-none">
-                  <span className="text-[10px] font-bold uppercase text-brand-600">
-                    {monthFormatter.format(when)}
-                  </span>
-                  <span className="text-base font-extrabold text-brand-800">{when.getDate()}</span>
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-bold text-ink-900">{item.topic}</p>
-                  <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-ink-500">
-                    <span className="font-semibold">{timeFormatter.format(when)}</span>
-                    {item.group_name ? <span className="truncate">{item.group_name}</span> : null}
-                  </p>
-                </div>
+              <li key={item.id}>
+                <button
+                  type="button"
+                  onClick={() => onOpenThread(item.id)}
+                  className="flex w-full gap-3 rounded-xl p-1 text-left transition hover:bg-ink-50"
+                >
+                  <div className="flex h-12 w-12 shrink-0 flex-col items-center justify-center rounded-xl bg-brand-50 leading-none">
+                    <span className="text-[10px] font-bold uppercase text-brand-600">
+                      {monthFormatter.format(when)}
+                    </span>
+                    <span className="text-base font-extrabold text-brand-800">
+                      {when.getDate()}
+                    </span>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-bold text-ink-900">{item.topic}</p>
+                    <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-ink-500">
+                      <span className="font-semibold">{timeFormatter.format(when)}</span>
+                      {item.group_name ? <span className="truncate">{item.group_name}</span> : null}
+                    </p>
+                  </div>
+                  {unread > 0 ? (
+                    <span className="mt-1 flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-brand-600 px-1.5 text-[10px] font-bold text-white">
+                      {unread > 9 ? '9+' : unread}
+                    </span>
+                  ) : null}
+                </button>
               </li>
             );
           })}
@@ -1525,7 +1732,12 @@ function EmptyTasks() {
 }
 
 function TaskCard({ task, busy, onResolve }) {
-  const due = task.consultation_date ? new Date(task.consultation_date) : null;
+  // A real deadline, if the adviser set one when raising the item. The card used
+  // to show the session date in this slot, which is where the task came from,
+  // not when it is wanted.
+  const due = task.due_date ? new Date(`${task.due_date}T00:00`) : null;
+  const from = task.consultation_date ? new Date(task.consultation_date) : null;
+  const overdue = due ? due < new Date(new Date().toDateString()) : false;
 
   return (
     <article className="animate-rise flex flex-col rounded-2xl bg-white p-5 shadow-card ring-1 ring-ink-100 transition duration-300 hover:-translate-y-1 hover:shadow-raised hover:ring-brand-200">
@@ -1556,9 +1768,18 @@ function TaskCard({ task, busy, onResolve }) {
 
       <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-ink-100 pt-3 text-xs font-medium text-ink-500">
         {due ? (
+          <span
+            className={`flex items-center gap-1 font-bold ${
+              overdue ? 'text-rose-600' : 'text-ink-600'
+            }`}
+          >
+            <CalendarDays className="h-3.5 w-3.5" aria-hidden="true" />
+            {overdue ? 'Overdue' : 'Due'} {shortDateFormatter.format(due)}
+          </span>
+        ) : from ? (
           <span className="flex items-center gap-1">
             <CalendarDays className="h-3.5 w-3.5" aria-hidden="true" />
-            {shortDateFormatter.format(due)}
+            From {shortDateFormatter.format(from)}
           </span>
         ) : null}
         {task.assignee_name ? (

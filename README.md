@@ -17,6 +17,9 @@ client/                    Vite + React app
   src/components/Dashboard.jsx
   src/components/BookingModal.jsx      booking form + slot picker
   src/components/AvailabilityView.jsx  the adviser's consultation hours
+  src/components/ConsultationThread.jsx    per-consultation chat
+  src/components/CompleteSessionModal.jsx  minutes + action items
+  src/components/HistoryView.jsx           sessions already held
   src/lib/api.js           fetch wrapper
   src/lib/session.js       localStorage session
   src/lib/schedule.js      weekday / slot helpers
@@ -25,6 +28,7 @@ supabase/migrations/
   0002_restrict_function_grants.sql
   ...
   0006_adviser_availability.sql        consultation hours
+  0007_messages_and_session_wrapup.sql threads, minutes, action items
 ```
 
 ## 1. Database
@@ -123,6 +127,13 @@ development and no CORS round trip is needed.
 | GET | `/api/advisers/:id/slots?date=` | Bearer | Open slots on a date, plus `taken` flags |
 | POST | `/api/consultations` | Bearer | Book (adviser) / request (student) |
 | PATCH | `/api/consultations/:id/decision` | Bearer | Adviser approves or declines |
+| GET | `/api/consultations/history` | Bearer | Sessions already held |
+| GET | `/api/consultations/:id` | Bearer | One session + who a task can go to |
+| GET | `/api/consultations/:id/messages` | Bearer | The thread (also marks it read) |
+| POST | `/api/consultations/:id/messages` | Bearer | Send a message |
+| GET | `/api/messages/unread` | Bearer | Unread totals for the badges |
+| POST | `/api/consultations/:id/complete` | Bearer | Wrap up: minutes + action items |
+| POST | `/api/consultations/:id/tasks` | Bearer | Raise one more action item |
 | PATCH | `/api/tasks/:id` | Bearer | Resolve / reopen a task |
 | GET | `/api/health` | — | Liveness + DB check |
 
@@ -179,11 +190,74 @@ and slot times are displayed in that zone rather than the browser's.
 Deleting a block does not touch sessions already booked out of it — those are
 real consultations now, not slots.
 
+### Consultation threads
+
+Every consultation carries a chat thread, opened from the **Messages** button on
+a session, a request or a past session, and from the envelope in the header
+(which jumps to whichever thread has the most unread).
+
+Threads are scoped to a **consultation**, not to a student/adviser pair. There is
+no standing group-to-adviser link in this schema — an adviser is picked per
+booking — so a pair has no natural scope or permission rule. A consultation
+already carries both sides and its own access rule, the same predicate the
+upcoming list, the request inbox and the task list all use, so threads inherit it
+unchanged.
+
+This is also the reply channel a decline never had. `decline_reason` is one
+sentence with nowhere to answer it, so "I have a class then, try Thursday" ended
+the conversation instead of continuing it; a declined request now shows a
+**Reply** button and the reason as the first thing in the thread.
+
+Unread is one high-water mark per person per thread (`consultation_reads`) rather
+than a read flag per message, since the badge only ever needs "since when". A
+message counts as unread when somebody else sent it after you last opened that
+thread. Opening a thread marks it read up to the newest message *returned*, not
+to `now()`, so a message landing mid-request stays unread rather than being
+silently skipped.
+
+**Delivery is polling, every six seconds, while a thread is open.** Supabase
+Realtime is the obvious upgrade, but the client has no Supabase wiring at all
+today — it only talks to this Express API, which reaches Postgres as the owner,
+so RLS is defence in depth rather than the enforcement point. Pushing live
+updates into the browser would make RLS load-bearing and is a separate piece of
+work. A six-second poll needs neither.
+
+### Completing a session
+
+An adviser wraps up a session from **Wrap up** on the consultation card or in
+**Past sessions**: what was agreed, plus the action items that came out of it,
+each optionally assigned to one student and given a due date. It runs in one
+transaction — a half-written wrap-up, session closed and tasks lost, cannot be
+recovered from the UI.
+
+Two things were broken before this existed, and they were the same hole from two
+ends:
+
+- **`action_items` had no writer.** Nothing in the API could insert one, so the
+  Action items screen, its stat tile and every task card were permanently empty
+  for every user. `PATCH /api/tasks/:id` could resolve a row nothing could
+  create.
+- **A consultation could never finish.** `completed` and `cancelled` were in the
+  status CHECK from 0005 but unreachable. A session happened, fell out of the
+  `meeting_date >= now()` filter, and was gone — nothing recorded that it took
+  place.
+
+Completing sets `completed`, which drops the session out of every "upcoming"
+query and into **Past sessions**. A past session nobody wrapped up still appears
+there, flagged *Not wrapped up*, because it happened whether or not anyone wrote
+it down — surfacing it is how it gets finished.
+
+Action items also gained a real `due_date`. The task card used to show the date
+of the session an item came *from* in the slot where a deadline belongs; it now
+shows the deadline when there is one, in red once it is past.
+
 ## Known placeholders
 
-- **Email notifications** are not wired. The adviser is notified inside the app
-  (bell badge + request list); nothing lands in their inbox. Supabase Auth only
-  sends the sign-in code. Add a mailer if requests need to reach advisers who are
+- **Email notifications** are not wired. Requests and thread messages are
+  notified inside the app only (the bell, the envelope, the sidebar badge);
+  nothing lands in anyone's inbox, and Supabase Auth only sends the sign-in code.
+  This matters more now that there are threads — a message sits unseen until the
+  other side next opens the app. Add a mailer if it needs to reach someone who is
   not looking at the dashboard.
 - **Attachments** in the booking modal are UI only. Files are listed but not
   uploaded; wire them to a Supabase Storage bucket when you need them.
@@ -196,3 +270,14 @@ real consultations now, not slots.
   is not just cosmetic). There is no standing group-to-adviser link, so
   "Groups booked" on the adviser dashboard counts only groups with an upcoming
   session. Add an `adviser_id` on the group if you want a permanent pairing.
+- **`group_name` is free text**, matched between `profiles` and `consultations`
+  by string equality. "Group 7 - BSIT" and "Group 7 – BSIT" are silently two
+  different groups, and a student whose profile does not match character for
+  character sees none of their group's sessions. A `groups` table with a real id
+  is the fix.
+- **Sessions expire abruptly.** `refresh_token` is saved to localStorage but only
+  ever used during registration — never to refresh an expiring session, so a
+  student is dropped to the login screen mid-task.
+- **No cancel or reschedule.** A student cannot withdraw a booking and an adviser
+  cannot call one off; only approve/decline exist, and only while pending. The
+  `cancelled` status is in the CHECK constraint and still unreachable.
