@@ -30,6 +30,8 @@ export default function BookingModal({ token, role, defaultGroupName, onClose, o
   });
   const [advisers, setAdvisers] = useState([]);
   const [advisersLoading, setAdvisersLoading] = useState(!isAdviser);
+  // The department the directory was filtered by, as the server reports it.
+  const [adviserDepartment, setAdviserDepartment] = useState(null);
   const [files, setFiles] = useState([]);
   const [dragging, setDragging] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -62,7 +64,10 @@ export default function BookingModal({ token, role, defaultGroupName, onClose, o
 
     const controller = new AbortController();
     api('/advisers', { token, signal: controller.signal })
-      .then((result) => setAdvisers(result.advisers ?? []))
+      .then((result) => {
+        setAdvisers(result.advisers ?? []);
+        setAdviserDepartment(result.scoped ? result.department : null);
+      })
       .catch((err) => {
         if (err.name !== 'AbortError') setError(err.message);
       })
@@ -192,16 +197,24 @@ export default function BookingModal({ token, role, defaultGroupName, onClose, o
                       ? 'No advisers registered yet'
                       : 'Select your adviser'}
                 </option>
+                {/* The list is already only your department, so the rank is the
+                    useful thing to show next to the name. */}
                 {advisers.map((adviser) => (
                   <option key={adviser.id} value={adviser.id}>
                     {adviser.full_name}
-                    {adviser.department ? ` - ${adviser.department}` : ''}
+                    {adviser.faculty_position ? ` - ${adviser.faculty_position}` : ''}
                   </option>
                 ))}
               </select>
               {!advisersLoading && advisers.length === 0 ? (
                 <p className="mt-1.5 text-xs text-slate-400">
-                  Ask your adviser to register with their @hau.edu.ph address first.
+                  {adviserDepartment
+                    ? `No adviser from ${adviserDepartment} has registered yet.`
+                    : 'Ask your adviser to register with their @hau.edu.ph address first.'}
+                </p>
+              ) : !advisersLoading && adviserDepartment ? (
+                <p className="mt-1.5 text-xs text-slate-400">
+                  Showing advisers from {adviserDepartment}.
                 </p>
               ) : null}
             </Field>

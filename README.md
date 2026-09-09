@@ -127,6 +127,8 @@ cards need something to write to.
   are hard-coded, since no table tracks them. The 60% / "System Review" figures come
   from there.
 - **Adviser assignment** — a student picks their adviser per booking, from the
-  directory at `GET /api/advisers`. There is no standing group-to-adviser link, so
+  directory at `GET /api/advisers`, which lists only the advisers in the student's
+  own department (`POST /api/consultations` enforces the same rule, so the filter
+  is not just cosmetic). There is no standing group-to-adviser link, so
   "Groups booked" on the adviser dashboard counts only groups with an upcoming
   session. Add an `adviser_id` on the group if you want a permanent pairing.

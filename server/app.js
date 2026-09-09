@@ -548,20 +548,30 @@ app.get(
  * GET /api/advisers
  * The adviser directory a student picks from when booking. Only finished
  * registrations appear, so a half-created account cannot be booked with.
+ *
+ * The list is scoped to the caller's own department: a School of Computing
+ * student sees the School of Computing advisers and nobody else. `scoped` says
+ * whether that filter was applied -- it is false only for the rare profile with
+ * no department recorded (an account created before the field existed), which
+ * falls back to the full directory rather than an empty screen.
  */
 app.get(
   '/api/advisers',
   requireAuth,
-  asyncRoute(async (_req, res) => {
+  asyncRoute(async (req, res) => {
+    const department = req.profile.department ?? null;
+
     const { rows } = await pool.query(
       `select id, full_name, email, department, faculty_position
          from public.profiles
         where role = 'adviser'
           and registration_completed_at is not null
+          and ($1::text is null or department = $1)
         order by full_name asc`,
+      [department],
     );
 
-    res.json({ advisers: rows });
+    res.json({ advisers: rows, department, scoped: department !== null });
   }),
 );
 
@@ -633,13 +643,21 @@ app.post(
     if (!UUID_RE.test(String(adviserId))) throw new HttpError(400, 'That adviser is not valid.');
 
     const { rows: adviser } = await pool.query(
-      `select 1 from public.profiles
+      `select department from public.profiles
         where id = $1 and role = 'adviser' and registration_completed_at is not null
         limit 1`,
       [adviserId],
     );
     if (!adviser.length) {
       throw new HttpError(400, 'That adviser was not found. Pick one from the list.');
+    }
+
+    // The directory is already filtered by department; this is the same rule
+    // enforced on the way in, so a hand-made request cannot reach across
+    // schools. Profiles with no department on either side skip the check.
+    const bookerDepartment = req.profile.department;
+    if (bookerDepartment && adviser[0].department && adviser[0].department !== bookerDepartment) {
+      throw new HttpError(403, `You can only book advisers from ${bookerDepartment}.`);
     }
 
     const { rows } = await pool.query(
