@@ -20,6 +20,7 @@ import {
   ShieldCheck,
   Sparkles,
   User,
+  Users,
 } from 'lucide-react';
 import { api } from '../lib/api.js';
 import {
@@ -42,7 +43,8 @@ const MIN_PASSWORD = 8;
  *   login   email + password
  *   email   step 1 of sign-up  - address only
  *   verify  step 2             - 6-digit code
- *   details step 3             - name, student ID, department, year, course, password
+ *   details step 3             - name, student ID, department, year, course,
+ *                                 section, password
  */
 export default function AuthScreen({ onAuthenticated }) {
   const [view, setView] = useState('login');
@@ -61,6 +63,7 @@ export default function AuthScreen({ onAuthenticated }) {
     department: '',
     yearLevel: '',
     course: '',
+    section: '',
     employeeId: '',
     facultyPosition: '',
     password: '',
@@ -234,6 +237,7 @@ export default function AuthScreen({ onAuthenticated }) {
                 studentId: details.studentId.trim(),
                 course: details.course,
                 yearLevel: details.yearLevel,
+                section: details.section.trim().toUpperCase(),
               }),
         },
       });
@@ -652,7 +656,7 @@ export default function AuthScreen({ onAuthenticated }) {
                         </Field>
                       </div>
 
-                      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                      <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                         <Field label="Department" htmlFor="department" icon={Building2}>
                           <select
                             id="department"
@@ -668,6 +672,23 @@ export default function AuthScreen({ onAuthenticated }) {
                               </option>
                             ))}
                           </select>
+                        </Field>
+
+                        <Field label="Section" htmlFor="section" icon={Users}>
+                          <input
+                            id="section"
+                            required
+                            maxLength={20}
+                            value={details.section}
+                            onChange={(event) =>
+                              updateDetail('section', event.target.value.toUpperCase())
+                            }
+                            placeholder="CS-401"
+                            className={`${INPUT} uppercase`}
+                          />
+                          <p className="mt-1.5 text-[12px] text-ink-500">
+                            Your class section. Thesis group names are unique within it.
+                          </p>
                         </Field>
 
                         <Field label="Course" htmlFor="course" icon={BookOpen}>

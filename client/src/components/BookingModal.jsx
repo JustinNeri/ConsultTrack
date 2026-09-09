@@ -45,7 +45,7 @@ function formatBytes(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export default function BookingModal({ token, role, defaultGroupName, onClose, onCreated }) {
+export default function BookingModal({ token, role, group, defaultGroupName, onClose, onCreated }) {
   // An adviser books for themselves, so they pick no adviser and the server
   // fills in their own id. They also skip the slot picker: consultation hours
   // exist to tell students when to ask, and an adviser is not asking anyone.
@@ -56,7 +56,10 @@ export default function BookingModal({ token, role, defaultGroupName, onClose, o
     time: '',
     topic: '',
     location: '',
-    groupName: defaultGroupName ?? '',
+    // An adviser still types or picks a group; a student's is their membership
+    // and cannot be typed over.
+    groupName: group?.name ?? defaultGroupName ?? '',
+    groupId: group?.id ?? '',
     adviserId: '',
   });
   const [advisers, setAdvisers] = useState([]);
@@ -77,6 +80,9 @@ export default function BookingModal({ token, role, defaultGroupName, onClose, o
   const [slotsVersion, setSlotsVersion] = useState(0);
 
   const [files, setFiles] = useState([]);
+  // For an adviser: the groups they already hold consultations with. They can
+  // still type a name for a group that has not registered itself yet.
+  const [advisedGroups, setAdvisedGroups] = useState([]);
   // Which file is going up, so the button can say so instead of hanging.
   const [uploading, setUploading] = useState(null);
   const [dragging, setDragging] = useState(false);
@@ -185,6 +191,17 @@ export default function BookingModal({ token, role, defaultGroupName, onClose, o
     setForm((prev) => ({ ...prev, [field]: value }));
   }
 
+  /* The groups an adviser may book with. A student's group is fixed. */
+  useEffect(() => {
+    if (!isAdviser) return undefined;
+    const controller = new AbortController();
+    api('/thesis-groups/advised', { token, signal: controller.signal })
+      .then((result) => setAdvisedGroups(result.groups ?? []))
+      // Booking still works by typing a name, so this stays quiet.
+      .catch(() => {});
+    return () => controller.abort();
+  }, [isAdviser, token]);
+
   /* ------------------------------------------------------ file drop zone -- */
   function addFiles(incoming) {
     const room = MAX_ATTACHMENTS - files.length;
@@ -253,7 +270,13 @@ export default function BookingModal({ token, role, defaultGroupName, onClose, o
           topic: form.topic.trim(),
           location: form.location.trim() || null,
           meeting_date: meetingIso,
-          ...(form.groupName.trim() ? { group_name: form.groupName.trim() } : {}),
+          // A registered group travels by id, so membership decides who sees
+          // the session. The name is a fallback for groups that predate this.
+          ...(form.groupId
+            ? { group_id: form.groupId }
+            : form.groupName.trim()
+              ? { group_name: form.groupName.trim() }
+              : {}),
           ...(isAdviser ? {} : { adviser_id: form.adviserId }),
         },
       });
@@ -310,7 +333,7 @@ export default function BookingModal({ token, role, defaultGroupName, onClose, o
   const canSubmit =
     timingChosen &&
     form.topic.trim() &&
-    form.groupName.trim() &&
+    (form.groupId || form.groupName.trim()) &&
     (isAdviser || form.adviserId) &&
     !submitting;
 
@@ -407,15 +430,49 @@ export default function BookingModal({ token, role, defaultGroupName, onClose, o
           ) : null}
 
           <Field id="booking-group" label="Thesis group" icon={Users} className="mb-4">
-            <input
-              id="booking-group"
-              type="text"
-              required
-              value={form.groupName}
-              onChange={(event) => updateField('groupName', event.target.value)}
-              placeholder="Group 7 - ConsultTrack"
-              className={inputClass}
-            />
+            {!isAdviser ? (
+              /*
+               * Read-only for a student. The group is their membership, and
+               * typing another one would book a session their own group could
+               * not see -- which is the failure groups exist to prevent.
+               */
+              <div className="rounded-lg border border-ink-200 bg-ink-50 px-3.5 py-2.5">
+                <p className="text-[14px] font-medium text-ink-900">{form.groupName}</p>
+                <p className="mt-0.5 text-[12px] text-ink-500">
+                  Everyone in your group will see this consultation.
+                </p>
+              </div>
+            ) : advisedGroups.length > 0 ? (
+              <select
+                id="booking-group"
+                required
+                value={form.groupId}
+                onChange={(event) => {
+                  const picked = advisedGroups.find((item) => item.id === event.target.value);
+                  updateField('groupId', event.target.value);
+                  updateField('groupName', picked?.name ?? '');
+                }}
+                className={inputClass}
+              >
+                <option value="">Select a group</option>
+                {advisedGroups.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name}
+                    {item.section ? ` (${item.section})` : ''}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                id="booking-group"
+                type="text"
+                required
+                value={form.groupName}
+                onChange={(event) => updateField('groupName', event.target.value)}
+                placeholder="Group 7 - ConsultTrack"
+                className={inputClass}
+              />
+            )}
           </Field>
 
           {/* --------------------------------------------- when: slots or free */}

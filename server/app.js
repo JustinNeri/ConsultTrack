@@ -156,8 +156,36 @@ const STUDENT_ID_RE = /^[0-9-]{6,20}$/;
 // Faculty numbers vary more than student ones, so letters are allowed too.
 const EMPLOYEE_ID_RE = /^[A-Za-z0-9-]{4,20}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// A class section: "CS-401", "IT401A", "BSIT 4-B". Letters, digits, spaces and
+// dashes, which is every form the registrar actually prints.
+const SECTION_RE = /^[A-Za-z0-9][A-Za-z0-9 -]{1,19}$/;
+// Join codes avoid 0/O and 1/I, because these get read aloud and written down.
+const JOIN_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 /* --------------------------------------------------------- auth middleware */
+
+/**
+ * The predicate deciding whether a student may see a consultation row.
+ *
+ * Three ways in, in order of how firmly they hold:
+ *   they booked it themselves;
+ *   it belongs to the thesis group they are a member of;
+ *   it predates groups entirely, and still matches the old group_name string.
+ *
+ * That third case is why `group_id is null` guards it. Once a consultation has
+ * a real group, membership is the only thing that grants access -- otherwise a
+ * student who typed the same words into their profile would inherit another
+ * group's sessions, which is exactly the bug groups exist to end.
+ *
+ * Takes placeholders rather than values, so each caller keeps its own numbering.
+ */
+function groupVisibility({ creator, groupId, groupName }) {
+  return `(
+              c.created_by = ${creator}
+           or (${groupId}::uuid is not null and c.group_id = ${groupId})
+           or (c.group_id is null and c.group_name is not null and c.group_name = ${groupName})
+         )`;
+}
 
 async function requireAuth(req, _res, next) {
   try {
@@ -173,6 +201,25 @@ async function requireAuth(req, _res, next) {
       [data.user.id],
     );
 
+    /*
+     * Which thesis group they belong to, if any.
+     *
+     * Read separately rather than joined into the select above, because that
+     * column list is reused in RETURNING clauses where a join is not available.
+     *
+     * The group's own name wins over `profiles.group_name`: the profile column
+     * is a leftover from when a group was whatever string you typed, and it can
+     * disagree with the group you are actually a member of.
+     */
+    const { rows: membership } = await pool.query(
+      `select g.id, g.name, g.section, g.join_code, m.role
+         from public.thesis_group_members m
+         join public.thesis_groups g on g.id = m.group_id
+        where m.profile_id = $1
+        limit 1`,
+      [data.user.id],
+    );
+
     req.user = data.user;
     // Storage is reached as the caller, not as the service, so their token has
     // to outlive the check that validated it.
@@ -183,7 +230,17 @@ async function requireAuth(req, _res, next) {
       email: data.user.email,
       role: 'student',
       group_name: null,
+      section: null,
     };
+
+    const group = membership[0] ?? null;
+    req.profile.group_id = group?.id ?? null;
+    req.profile.group_role = group?.role ?? null;
+    if (group) {
+      req.profile.group_name = group.name;
+      req.profile.group_section = group.section;
+      req.profile.group_join_code = group.join_code;
+    }
     next();
   } catch (err) {
     next(err);
@@ -202,7 +259,7 @@ async function requireAuth(req, _res, next) {
  * do not control.
  */
 
-const PROFILE_COLUMNS = `id, full_name, email, role, group_name,
+const PROFILE_COLUMNS = `id, full_name, email, role, group_name, section,
                          last_name, first_name, middle_initial,
                          student_id, department, course, year_level,
                          employee_id, faculty_position,
@@ -410,6 +467,9 @@ app.post(
     const studentId = isAdviser ? '' : String(req.body?.studentId ?? '').trim();
     const course = isAdviser ? '' : String(req.body?.course ?? '').trim();
     const yearLevel = isAdviser ? '' : String(req.body?.yearLevel ?? '').trim();
+    // The class section, e.g. CS-401. Required of students: it is what makes a
+    // group name unique, since every section has a "Group 1".
+    const section = isAdviser ? '' : String(req.body?.section ?? '').trim().toUpperCase();
 
     // Adviser-only fields.
     const employeeId = isAdviser ? String(req.body?.employeeId ?? '').trim() : '';
@@ -434,6 +494,10 @@ app.post(
       }
       if (!course) throw new HttpError(400, 'Course is required.');
       if (!YEAR_LEVELS.includes(yearLevel)) throw new HttpError(400, 'Select your year level.');
+      if (!section) throw new HttpError(400, 'Section is required.');
+      if (!SECTION_RE.test(section)) {
+        throw new HttpError(400, 'Enter a valid section, e.g. CS-401.');
+      }
     }
 
     const idColumn = isAdviser ? 'employee_id' : 'student_id';
@@ -475,7 +539,7 @@ app.post(
         department,
         ...(isAdviser
           ? { employee_id: employeeId, faculty_position: facultyPosition }
-          : { student_id: studentId, course, year_level: yearLevel }),
+          : { student_id: studentId, course, year_level: yearLevel, section }),
       },
     });
     if (updateError) {
@@ -487,14 +551,14 @@ app.post(
           set full_name = $2, last_name = $3, first_name = $4, middle_initial = $5,
               student_id = $6, department = $7, course = $8, year_level = $9,
               employee_id = $10, faculty_position = $11,
-              role = $12,
+              role = $12, section = $13,
               email_verified_at = coalesce(email_verified_at, now()),
               registration_completed_at = now()
         where id = $1
     returning ${PROFILE_COLUMNS}`,
       [req.profile.id, fullName, lastName, firstName, middleInitial || null,
        studentId || null, department, course || null, yearLevel || null,
-       employeeId || null, facultyPosition || null, role],
+       employeeId || null, facultyPosition || null, role, section || null],
     );
 
     res.json({
@@ -564,7 +628,7 @@ app.get(
  * cannot be mistaken for an official session.
  */
 async function upcomingConsultations(profile, limit) {
-  const { id, role, group_name: groupName } = profile;
+  const { id, role, group_name: groupName, group_id: groupId } = profile;
 
   const { rows } = await pool.query(
     `select c.id,
@@ -587,11 +651,11 @@ async function upcomingConsultations(profile, limit) {
         and c.meeting_date >= now()
         and (
               ($2 = 'adviser' and c.adviser_id = $1)
-           or ($2 <> 'adviser' and (c.group_name = $3 or c.created_by = $1))
+           or ($2 <> 'adviser' and ${groupVisibility({ creator: '$1', groupId: '$5', groupName: '$3' })})
         )
       order by c.meeting_date asc
       limit $4`,
-    [id, role, groupName, limit],
+    [id, role, groupName, limit, groupId],
   );
   return rows;
 }
@@ -637,7 +701,7 @@ app.get(
   '/api/consultations/requests',
   requireAuth,
   asyncRoute(async (req, res) => {
-    const { id, role, group_name: groupName } = req.profile;
+    const { id, role, group_name: groupName, group_id: groupId } = req.profile;
 
     const { rows } = await pool.query(
       `select c.id,
@@ -682,7 +746,7 @@ app.get(
                        and c.proposed_date > now() and c.proposed_by <> $1)
                 ))
              or ($2 <> 'adviser'
-                 and (c.group_name = $3 or c.created_by = $1)
+                 and ${groupVisibility({ creator: '$1', groupId: '$4', groupName: '$3' })}
                  and (
                        c.status = 'pending'
                        -- A move proposed on a booked session needs an answer
@@ -695,7 +759,7 @@ app.get(
                  ))
               )
         order by c.meeting_date asc`,
-      [id, role, groupName],
+      [id, role, groupName, groupId],
     );
 
     res.json({ requests: rows });
@@ -1099,7 +1163,7 @@ app.get(
   '/api/tasks/pending',
   requireAuth,
   asyncRoute(async (req, res) => {
-    const { id, role, group_name: groupName } = req.profile;
+    const { id, role, group_name: groupName, group_id: groupId } = req.profile;
 
     const { rows } = await pool.query(
       `select a.id,
@@ -1118,10 +1182,10 @@ app.get(
         where a.status = 'pending'
           and (
                 ($2 = 'adviser' and c.adviser_id = $1)
-             or ($2 <> 'adviser' and (a.assignee_id = $1 or c.group_name = $3))
+             or ($2 <> 'adviser' and (a.assignee_id = $1 or ${groupVisibility({ creator: '$1', groupId: '$4', groupName: '$3' })}))
           )
         order by c.meeting_date asc nulls last, a.created_at asc`,
-      [id, role, groupName],
+      [id, role, groupName, groupId],
     );
 
     res.json({ tasks: rows });
@@ -1130,7 +1194,7 @@ app.get(
 
 /**
  * POST /api/consultations
- * Body: { topic, meeting_date (ISO), location?, group_name?, adviser_id? }
+ * Body: { topic, meeting_date (ISO), location?, group_id?, group_name?, adviser_id? }
  *
  * A student's booking is a *request*: it is created 'pending' and waits for the
  * adviser's decision. Read the returned `status` to tell the two apart.
@@ -1142,12 +1206,51 @@ app.post(
     const topic = String(req.body?.topic ?? '').trim();
     const location = String(req.body?.location ?? '').trim() || null;
     const rawDate = String(req.body?.meeting_date ?? '').trim();
-    const groupName = String(req.body?.group_name ?? req.profile.group_name ?? '').trim();
-
     if (!topic) throw new HttpError(400, 'A meeting agenda / topic is required.');
     if (topic.length > 500) throw new HttpError(400, 'The topic is too long (max 500 characters).');
-    if (!groupName) {
-      throw new HttpError(400, 'No thesis group on your profile - send group_name with the request.');
+
+    /*
+     * Which group the session belongs to.
+     *
+     * A student books for the group they are a member of, and cannot name
+     * another -- that is the whole point of memberships. An adviser names one
+     * of the groups they already advise, and may still fall back to a free-text
+     * name for a group that has not registered itself yet.
+     */
+    let groupId = null;
+    let groupName = '';
+
+    if (req.profile.role === 'adviser') {
+      const requestedId = String(req.body?.group_id ?? '').trim();
+      if (requestedId) {
+        if (!UUID_RE.test(requestedId)) throw new HttpError(400, 'That group is not valid.');
+        const { rows: advised } = await pool.query(
+          `select g.id, g.name
+             from public.thesis_groups g
+            where g.id = $1
+              and exists (
+                select 1 from public.consultations c
+                 where c.group_id = g.id and c.adviser_id = $2
+              )
+            limit 1`,
+          [requestedId, req.profile.id],
+        );
+        if (!advised.length) throw new HttpError(403, 'You do not advise that group.');
+        groupId = advised[0].id;
+        groupName = advised[0].name;
+      } else {
+        groupName = String(req.body?.group_name ?? '').trim();
+        if (!groupName) throw new HttpError(400, 'Name the group this session is with.');
+      }
+    } else {
+      if (!req.profile.group_id) {
+        throw new HttpError(
+          409,
+          'Create or join a thesis group before booking - a consultation belongs to the whole group.',
+        );
+      }
+      groupId = req.profile.group_id;
+      groupName = req.profile.group_name;
     }
 
     const meetingDate = new Date(rawDate);
@@ -1208,13 +1311,13 @@ app.post(
 
     const { rows } = await pool.query(
       `insert into public.consultations
-              (adviser_id, group_name, topic, location, meeting_date, status, created_by)
-       values ($1, $2, $3, $4, $5, $7, $6)
-    returning id, adviser_id, group_name, topic, location, meeting_date, status, created_at`,
+              (adviser_id, group_name, group_id, topic, location, meeting_date, status, created_by)
+       values ($1, $2, $8, $3, $4, $5, $7, $6)
+    returning id, adviser_id, group_name, group_id, topic, location, meeting_date, status, created_at`,
       // A slot carries the room its block named, so a student who left the
       // location blank still gets "Faculty Room 204" on the booking.
       [adviserId, groupName, topic, location ?? slot.slotLocation, meetingDate.toISOString(),
-       req.profile.id, status],
+       req.profile.id, status, groupId],
     );
 
     res.status(201).json({ consultation: rows[0] });
@@ -1445,7 +1548,7 @@ async function loadConsultationFor(profile, consultationId) {
   }
 
   const { rows } = await pool.query(
-    `select c.id, c.adviser_id, c.group_name, c.topic, c.location, c.meeting_date,
+    `select c.id, c.adviser_id, c.group_name, c.group_id, c.topic, c.location, c.meeting_date,
             c.status, c.created_by, c.created_at, c.decline_reason,
             c.minutes, c.completed_at,
             c.proposed_date, c.proposed_by, c.proposed_note,
@@ -1460,10 +1563,10 @@ async function loadConsultationFor(profile, consultationId) {
       where c.id = $1
         and (
               ($3 = 'adviser' and c.adviser_id = $2)
-           or ($3 <> 'adviser' and (c.group_name = $4 or c.created_by = $2))
+           or ($3 <> 'adviser' and ${groupVisibility({ creator: '$2', groupId: '$5', groupName: '$4' })})
         )
       limit 1`,
-    [consultationId, profile.id, profile.role, profile.group_name],
+    [consultationId, profile.id, profile.role, profile.group_name, profile.group_id],
   );
 
   if (!rows[0]) throw new HttpError(404, 'That consultation was not found.');
@@ -1565,7 +1668,7 @@ app.get(
   '/api/messages/unread',
   requireAuth,
   asyncRoute(async (req, res) => {
-    const { id, role, group_name: groupName } = req.profile;
+    const { id, role, group_name: groupName, group_id: groupId } = req.profile;
 
     const { rows } = await pool.query(
       `select c.id as consultation_id, c.topic, count(m.id)::int as unread
@@ -1575,13 +1678,13 @@ app.get(
                 on r.consultation_id = c.id and r.profile_id = $1
         where (
                 ($2 = 'adviser' and c.adviser_id = $1)
-             or ($2 <> 'adviser' and (c.group_name = $3 or c.created_by = $1))
+             or ($2 <> 'adviser' and ${groupVisibility({ creator: '$1', groupId: '$4', groupName: '$3' })})
               )
           and m.sender_id <> $1
           and (r.last_read_at is null or m.created_at > r.last_read_at)
         group by c.id, c.topic
         order by count(m.id) desc`,
-      [id, role, groupName],
+      [id, role, groupName, groupId],
     );
 
     res.json({
@@ -1605,7 +1708,7 @@ app.get(
     const requested = Number.parseInt(req.query.limit, 10);
     const limit = Number.isFinite(requested) ? Math.min(Math.max(requested, 1), 50) : 20;
 
-    const { id, role, group_name: groupName } = req.profile;
+    const { id, role, group_name: groupName, group_id: groupId } = req.profile;
 
     const { rows } = await pool.query(
       `select c.id, c.group_name, c.topic, c.location, c.meeting_date, c.status,
@@ -1622,11 +1725,11 @@ app.get(
           and (c.completed_at is not null or c.meeting_date < now())
           and (
                 ($2 = 'adviser' and c.adviser_id = $1)
-             or ($2 <> 'adviser' and (c.group_name = $3 or c.created_by = $1))
+             or ($2 <> 'adviser' and ${groupVisibility({ creator: '$1', groupId: '$5', groupName: '$3' })})
           )
         order by c.meeting_date desc
         limit $4`,
-      [id, role, groupName, limit],
+      [id, role, groupName, limit, groupId],
     );
 
     res.json({ consultations: rows });
@@ -1658,7 +1761,7 @@ app.get(
   '/api/groups',
   requireAuth,
   asyncRoute(async (req, res) => {
-    const { id, role, group_name: groupName } = req.profile;
+    const { id, role, group_name: groupName, group_id: groupId } = req.profile;
 
     const { rows } = await pool.query(
       `select c.group_name,
@@ -1669,11 +1772,11 @@ app.get(
         where c.group_name is not null
           and (
                 ($2 = 'adviser' and c.adviser_id = $1)
-             or ($2 <> 'adviser' and (c.group_name = $3 or c.created_by = $1))
+             or ($2 <> 'adviser' and ${groupVisibility({ creator: '$1', groupId: '$4', groupName: '$3' })})
           )
         group by c.group_name
         order by max(c.meeting_date) desc`,
-      [id, role, groupName],
+      [id, role, groupName, groupId],
     );
 
     res.json({ groups: rows });
@@ -1695,10 +1798,10 @@ app.get(
     const group = String(req.query.group ?? '').trim();
     if (!group) throw new HttpError(400, 'Name the group whose record you want.');
 
-    const { id, role, group_name: groupName } = req.profile;
+    const { id, role, group_name: groupName, group_id: groupId } = req.profile;
 
     const { rows } = await pool.query(
-      `select c.id, c.topic, c.location, c.meeting_date, c.status,
+      `select c.id, c.group_id, c.topic, c.location, c.meeting_date, c.status,
               c.minutes, c.completed_at,
               p.full_name       as adviser_name,
               p.faculty_position as adviser_position,
@@ -1731,10 +1834,10 @@ app.get(
           and (c.completed_at is not null or c.meeting_date < now())
           and (
                 ($2 = 'adviser' and c.adviser_id = $1)
-             or ($2 <> 'adviser' and (c.group_name = $3 or c.created_by = $1))
+             or ($2 <> 'adviser' and ${groupVisibility({ creator: '$1', groupId: '$5', groupName: '$3' })})
           )
         order by c.meeting_date asc`,
-      [id, role, groupName, group],
+      [id, role, groupName, group, groupId],
     );
 
     if (!rows.length) {
@@ -1744,11 +1847,16 @@ app.get(
     // The heading needs the group's own details, which live on the students
     // rather than on the consultation.
     const { rows: members } = await pool.query(
-      `select full_name, student_id, course, year_level
-         from public.profiles
-        where role = 'student' and group_name = $1
+      `select p.full_name, p.student_id, p.course, p.year_level, p.section
+         from public.profiles p
+         join public.thesis_group_members m on m.profile_id = p.id
+        where m.group_id = $1
+        union
+       select p.full_name, p.student_id, p.course, p.year_level, p.section
+         from public.profiles p
+        where $1::uuid is null and p.role = 'student' and p.group_name = $2
         order by full_name asc`,
-      [group],
+      [rows[0]?.group_id ?? null, group],
     );
 
     res.json({
@@ -1773,16 +1881,388 @@ app.get(
   asyncRoute(async (req, res) => {
     const consultation = await loadConsultationFor(req.profile, req.params.id);
 
+    /*
+     * Who to offer for attendance: the group's roster, plus whoever booked the
+     * session in case they are not on it. The `group_id is null` branch keeps
+     * consultations that predate groups working off the old name match.
+     */
     const { rows: members } = await pool.query(
-      `select id, full_name, email
-         from public.profiles
-        where role = 'student'
-          and (($1::text is not null and group_name = $1) or id = $2)
-        order by full_name asc`,
-      [consultation.group_name, consultation.created_by],
+      `select distinct p.id, p.full_name, p.email
+         from public.profiles p
+        where p.role = 'student'
+          and (
+                exists (
+                  select 1 from public.thesis_group_members m
+                   where m.profile_id = p.id and m.group_id = $1
+                )
+             or ($1::uuid is null and $2::text is not null and p.group_name = $2)
+             or p.id = $3
+          )
+        order by p.full_name asc`,
+      [consultation.group_id ?? null, consultation.group_name, consultation.created_by],
     );
 
     res.json({ consultation, members });
+  }),
+);
+
+/* --------------------------------------------------------- thesis groups -- */
+
+/**
+ * A join code somebody has to read out loud.
+ *
+ * Six characters from an alphabet with no 0/O or 1/I, so a code copied off a
+ * whiteboard resolves to exactly one group. Collisions are retried rather than
+ * prevented: the space is 32^6, and the unique index is the real guarantee.
+ */
+function makeJoinCode() {
+  let code = '';
+  for (let i = 0; i < 6; i += 1) {
+    code += JOIN_CODE_ALPHABET[Math.floor(Math.random() * JOIN_CODE_ALPHABET.length)];
+  }
+  return code;
+}
+
+/** The group plus its roster, shaped the way every group screen wants it. */
+async function loadGroup(groupId) {
+  const { rows: groups } = await pool.query(
+    `select g.id, g.name, g.section, g.department, g.join_code, g.created_at,
+            g.created_by
+       from public.thesis_groups g
+      where g.id = $1
+      limit 1`,
+    [groupId],
+  );
+  if (!groups.length) return null;
+
+  const { rows: members } = await pool.query(
+    `select p.id, p.full_name, p.email, p.student_id, p.course, p.year_level,
+            p.section, m.role, m.joined_at
+       from public.thesis_group_members m
+       join public.profiles p on p.id = m.profile_id
+      where m.group_id = $1
+      order by (m.role = 'leader') desc, p.full_name asc`,
+    [groupId],
+  );
+
+  return { ...groups[0], members };
+}
+
+/**
+ * GET /api/thesis-groups/mine
+ *
+ * The caller's own group, or null. An adviser has none; they see groups through
+ * the consultations they advise.
+ */
+app.get(
+  '/api/thesis-groups/mine',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    if (!req.profile.group_id) return res.json({ group: null });
+    res.json({ group: await loadGroup(req.profile.group_id) });
+  }),
+);
+
+/**
+ * POST /api/thesis-groups
+ * Body: { name }
+ *
+ * Creates a group and makes the caller its leader, in one transaction -- a
+ * group with no members would be unreachable, since membership is the only way
+ * back to it.
+ *
+ * The section comes from the profile rather than the request: it is what makes
+ * the name unique, and letting a student name someone else's section would let
+ * them collide with a group they cannot see.
+ */
+app.post(
+  '/api/thesis-groups',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    if (req.profile.role === 'adviser') {
+      throw new HttpError(403, 'Advisers do not belong to a thesis group.');
+    }
+    if (req.profile.group_id) {
+      throw new HttpError(409, 'You are already in a thesis group. Leave it first.');
+    }
+
+    const section = String(req.profile.section ?? '').trim().toUpperCase();
+    if (!section) {
+      throw new HttpError(
+        400,
+        'Add your section to your profile before creating a group.',
+      );
+    }
+
+    const name = String(req.body?.name ?? '').trim();
+    if (name.length < 2 || name.length > 120) {
+      throw new HttpError(400, 'Give the group a name of 2 to 120 characters.');
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+
+      let group = null;
+      // Retry only the code collision; a duplicate name is the caller's problem
+      // and has to surface as a 409.
+      for (let attempt = 0; attempt < 5 && !group; attempt += 1) {
+        try {
+          const { rows } = await client.query(
+            `insert into public.thesis_groups (name, section, department, join_code, created_by)
+                  values ($1, $2, $3, $4, $5)
+               returning id, name, section, department, join_code, created_at, created_by`,
+            [name, section, req.profile.department ?? null, makeJoinCode(), req.profile.id],
+          );
+          group = rows[0];
+        } catch (err) {
+          if (err.code !== '23505') throw err;
+          if (String(err.constraint ?? '').includes('join_code')) continue;
+          throw new HttpError(409, `Section ${section} already has a group called "${name}".`);
+        }
+      }
+      if (!group) throw new HttpError(503, 'Could not allocate a join code. Try again.');
+
+      await client.query(
+        `insert into public.thesis_group_members (group_id, profile_id, role)
+              values ($1, $2, 'leader')`,
+        [group.id, req.profile.id],
+      );
+
+      // Kept in step so the leftover profile column and the group agree; a few
+      // legacy queries still read it.
+      await client.query(`update public.profiles set group_name = $2 where id = $1`, [
+        req.profile.id,
+        group.name,
+      ]);
+
+      await client.query('commit');
+      res.status(201).json({ group: await loadGroup(group.id) });
+    } catch (err) {
+      await client.query('rollback').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  }),
+);
+
+/**
+ * POST /api/thesis-groups/join
+ * Body: { code }
+ *
+ * The code is the whole authorisation. There is deliberately no way to list
+ * groups you are not in, so a code is the only route to one you did not create.
+ */
+app.post(
+  '/api/thesis-groups/join',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    if (req.profile.role === 'adviser') {
+      throw new HttpError(403, 'Advisers do not belong to a thesis group.');
+    }
+    if (req.profile.group_id) {
+      throw new HttpError(409, 'You are already in a thesis group. Leave it first.');
+    }
+
+    const code = String(req.body?.code ?? '').trim().toUpperCase();
+    if (!/^[A-Z0-9]{6}$/.test(code)) {
+      throw new HttpError(400, 'A join code is six letters and digits.');
+    }
+
+    const { rows } = await pool.query(
+      `select id, name, section from public.thesis_groups where join_code = $1 limit 1`,
+      [code],
+    );
+    const group = rows[0];
+    if (!group) throw new HttpError(404, 'No group has that code.');
+
+    // A group belongs to one section, and its members should be in it. This is
+    // a guard against a mistyped code landing somebody in a stranger's group.
+    const mySection = String(req.profile.section ?? '').trim().toUpperCase();
+    if (mySection && group.section && mySection !== group.section) {
+      throw new HttpError(
+        403,
+        `That group is in section ${group.section} and you are in ${mySection}.`,
+      );
+    }
+
+    await pool.query(
+      `insert into public.thesis_group_members (group_id, profile_id, role)
+            values ($1, $2, 'member')
+       on conflict do nothing`,
+      [group.id, req.profile.id],
+    );
+    await pool.query(`update public.profiles set group_name = $2 where id = $1`, [
+      req.profile.id,
+      group.name,
+    ]);
+
+    res.json({ group: await loadGroup(group.id) });
+  }),
+);
+
+/**
+ * POST /api/thesis-groups/leave
+ *
+ * The leader cannot walk out on a group that still has members -- somebody has
+ * to be able to rename it and read the code -- so leadership passes to the
+ * longest-standing member instead. The last one out deletes the group.
+ */
+app.post(
+  '/api/thesis-groups/leave',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const groupId = req.profile.group_id;
+    if (!groupId) throw new HttpError(409, 'You are not in a thesis group.');
+
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+
+      await client.query(
+        `delete from public.thesis_group_members where group_id = $1 and profile_id = $2`,
+        [groupId, req.profile.id],
+      );
+
+      const { rows: remaining } = await client.query(
+        `select profile_id, role from public.thesis_group_members
+          where group_id = $1
+          order by joined_at asc`,
+        [groupId],
+      );
+
+      if (!remaining.length) {
+        // Nothing points at it any more. Consultations keep their own copy of
+        // the name, and group_id goes null by the foreign key.
+        await client.query(`delete from public.thesis_groups where id = $1`, [groupId]);
+      } else if (!remaining.some((member) => member.role === 'leader')) {
+        await client.query(
+          `update public.thesis_group_members set role = 'leader'
+            where group_id = $1 and profile_id = $2`,
+          [groupId, remaining[0].profile_id],
+        );
+      }
+
+      await client.query(`update public.profiles set group_name = null where id = $1`, [
+        req.profile.id,
+      ]);
+
+      await client.query('commit');
+      res.json({ ok: true });
+    } catch (err) {
+      await client.query('rollback').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  }),
+);
+
+/**
+ * PATCH /api/thesis-groups/mine
+ * Body: { name }
+ *
+ * Renaming, which only the leader may do. Past consultations keep the name they
+ * were booked under: the printable record is a historical document, and
+ * rewriting it to match a rename would be a lie about what was submitted.
+ */
+app.patch(
+  '/api/thesis-groups/mine',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const groupId = req.profile.group_id;
+    if (!groupId) throw new HttpError(409, 'You are not in a thesis group.');
+    if (req.profile.group_role !== 'leader') {
+      throw new HttpError(403, 'Only the group leader can rename the group.');
+    }
+
+    const name = String(req.body?.name ?? '').trim();
+    if (name.length < 2 || name.length > 120) {
+      throw new HttpError(400, 'Give the group a name of 2 to 120 characters.');
+    }
+
+    try {
+      await pool.query(`update public.thesis_groups set name = $2 where id = $1`, [
+        groupId,
+        name,
+      ]);
+    } catch (err) {
+      if (err.code === '23505') {
+        throw new HttpError(409, 'Another group in your section already has that name.');
+      }
+      throw err;
+    }
+
+    await pool.query(
+      `update public.profiles p
+          set group_name = $2
+         from public.thesis_group_members m
+        where m.profile_id = p.id and m.group_id = $1`,
+      [groupId, name],
+    );
+
+    res.json({ group: await loadGroup(groupId) });
+  }),
+);
+
+/**
+ * DELETE /api/thesis-groups/mine/members/:id
+ *
+ * The leader removing somebody. They cannot remove themselves this way -- that
+ * is what leaving is for, and it has the succession rules.
+ */
+app.delete(
+  '/api/thesis-groups/mine/members/:id',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const groupId = req.profile.group_id;
+    if (!groupId) throw new HttpError(409, 'You are not in a thesis group.');
+    if (req.profile.group_role !== 'leader') {
+      throw new HttpError(403, 'Only the group leader can remove a member.');
+    }
+
+    const memberId = String(req.params.id);
+    if (!UUID_RE.test(memberId)) throw new HttpError(400, 'That member is not valid.');
+    if (memberId === req.profile.id) {
+      throw new HttpError(409, 'Use "leave group" to remove yourself.');
+    }
+
+    const { rowCount } = await pool.query(
+      `delete from public.thesis_group_members where group_id = $1 and profile_id = $2`,
+      [groupId, memberId],
+    );
+    if (!rowCount) throw new HttpError(404, 'They are not in your group.');
+
+    await pool.query(`update public.profiles set group_name = null where id = $1`, [memberId]);
+
+    res.json({ group: await loadGroup(groupId) });
+  }),
+);
+
+/**
+ * GET /api/thesis-groups/advised
+ *
+ * For an adviser booking a session: the groups they already hold consultations
+ * with. Not a directory -- an adviser cannot enumerate groups they have never
+ * met, the same way a student cannot.
+ */
+app.get(
+  '/api/thesis-groups/advised',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    if (req.profile.role !== 'adviser') return res.json({ groups: [] });
+
+    const { rows } = await pool.query(
+      `select distinct g.id, g.name, g.section
+         from public.thesis_groups g
+         join public.consultations c on c.group_id = g.id
+        where c.adviser_id = $1
+        order by g.name asc`,
+      [req.profile.id],
+    );
+
+    res.json({ groups: rows });
   }),
 );
 
@@ -2030,32 +2510,32 @@ const MILESTONE_KEYS = [
  * Which group's milestones this caller is asking about.
  *
  * A student may only ever see their own, so the query string is ignored for
- * them. An adviser has to name one, and only gets it if they actually hold a
- * consultation with that group -- otherwise the endpoint would enumerate every
- * group in the school.
+ * them. An adviser has to name one by id, and only gets it if they actually
+ * hold a consultation with that group -- otherwise the endpoint would enumerate
+ * every group in the school.
  */
 async function resolveMilestoneGroup(profile, requested) {
-  if (profile.role !== 'adviser') return profile.group_name ?? null;
+  if (profile.role !== 'adviser') return profile.group_id ?? null;
 
-  const groupName = String(requested ?? '').trim();
-  if (!groupName) return null;
+  const groupId = String(requested ?? '').trim();
+  if (!UUID_RE.test(groupId)) return null;
 
   const { rows } = await pool.query(
     `select 1 from public.consultations
-      where group_name = $1 and adviser_id = $2
+      where group_id = $1 and adviser_id = $2
       limit 1`,
-    [groupName, profile.id],
+    [groupId, profile.id],
   );
-  return rows.length ? groupName : null;
+  return rows.length ? groupId : null;
 }
 
-/** Throws unless this adviser has a consultation with the named group. */
-async function assertAdvisesGroup(profile, groupName) {
+/** Throws unless this adviser has a consultation with that group. */
+async function assertAdvisesGroup(profile, groupId) {
   const { rows } = await pool.query(
     `select 1 from public.consultations
-      where group_name = $1 and adviser_id = $2
+      where group_id = $1 and adviser_id = $2
       limit 1`,
-    [groupName, profile.id],
+    [groupId, profile.id],
   );
   if (!rows.length) {
     throw new HttpError(403, 'You do not advise that group.');
@@ -2063,7 +2543,7 @@ async function assertAdvisesGroup(profile, groupName) {
 }
 
 /**
- * GET /api/milestones?group=<name>
+ * GET /api/milestones?group=<group id>
  *
  * A group's capstone progress. Students get their own group and nothing else;
  * an adviser names the group they want. An unknown or unadvised group comes back
@@ -2074,9 +2554,9 @@ app.get(
   '/api/milestones',
   requireAuth,
   asyncRoute(async (req, res) => {
-    const groupName = await resolveMilestoneGroup(req.profile, req.query.group);
-    if (!groupName) {
-      return res.json({ groupName: null, order: MILESTONE_KEYS, milestones: [] });
+    const groupId = await resolveMilestoneGroup(req.profile, req.query.group);
+    if (!groupId) {
+      return res.json({ groupId: null, order: MILESTONE_KEYS, milestones: [] });
     }
 
     const { rows } = await pool.query(
@@ -2086,17 +2566,17 @@ app.get(
               p.full_name as completed_by_name
          from public.group_milestones m
          left join public.profiles p on p.id = m.completed_by
-        where m.group_name = $1`,
-      [groupName],
+        where m.group_id = $1`,
+      [groupId],
     );
 
-    res.json({ groupName, order: MILESTONE_KEYS, milestones: rows });
+    res.json({ groupId, order: MILESTONE_KEYS, milestones: rows });
   }),
 );
 
 /**
  * PUT /api/milestones/:milestone
- * Body: { groupName, completed?: boolean, consultationId?: uuid }
+ * Body: { groupId, completed?: boolean, consultationId?: uuid }
  *
  * Marks one milestone reached, or clears it again with `completed: false`. Only
  * the group's own adviser may write: a milestone is their evaluation of the
@@ -2115,18 +2595,20 @@ app.put(
       throw new HttpError(400, 'That is not a capstone milestone.');
     }
 
-    const groupName = String(req.body?.groupName ?? '').trim();
-    if (!groupName) throw new HttpError(400, 'Name the group this milestone belongs to.');
-    await assertAdvisesGroup(req.profile, groupName);
+    const groupId = String(req.body?.groupId ?? '').trim();
+    if (!UUID_RE.test(groupId)) {
+      throw new HttpError(400, 'Name the group this milestone belongs to.');
+    }
+    await assertAdvisesGroup(req.profile, groupId);
 
     const completed = req.body?.completed !== false;
 
     if (!completed) {
       await pool.query(
-        `delete from public.group_milestones where group_name = $1 and milestone = $2`,
-        [groupName, milestone],
+        `delete from public.group_milestones where group_id = $1 and milestone = $2`,
+        [groupId, milestone],
       );
-      return res.json({ groupName, milestone, completed: false });
+      return res.json({ groupId, milestone, completed: false });
     }
 
     const consultationId =
@@ -2136,17 +2618,17 @@ app.put(
 
     const { rows } = await pool.query(
       `insert into public.group_milestones
-              (group_name, milestone, completed_by, consultation_id)
+              (group_id, milestone, completed_by, consultation_id)
             values ($1, $2, $3, $4)
-       on conflict (group_name, milestone) do update
+       on conflict (group_id, milestone) do update
               set completed_at = now(),
                   completed_by = excluded.completed_by,
                   consultation_id = coalesce(excluded.consultation_id, public.group_milestones.consultation_id)
          returning milestone, completed_at, consultation_id`,
-      [groupName, milestone, req.profile.id, consultationId],
+      [groupId, milestone, req.profile.id, consultationId],
     );
 
-    res.json({ groupName, completed: true, ...rows[0] });
+    res.json({ groupId, completed: true, ...rows[0] });
   }),
 );
 
@@ -2232,16 +2714,18 @@ app.post(
 
       // Part of the same attestation as the minutes, so part of the same
       // transaction. A group with no name cannot carry group-level progress.
-      if (milestone && consultation.group_name) {
+      // A session booked before groups existed has no group to credit, so its
+      // wrap-up cannot move a tracker.
+      if (milestone && consultation.group_id) {
         await client.query(
           `insert into public.group_milestones
-                  (group_name, milestone, completed_by, consultation_id)
+                  (group_id, milestone, completed_by, consultation_id)
                 values ($1, $2, $3, $4)
-           on conflict (group_name, milestone) do update
+           on conflict (group_id, milestone) do update
                   set completed_at = now(),
                       completed_by = excluded.completed_by,
                       consultation_id = excluded.consultation_id`,
-          [consultation.group_name, milestone, req.profile.id, consultation.id],
+          [consultation.group_id, milestone, req.profile.id, consultation.id],
         );
       }
 
@@ -2250,7 +2734,7 @@ app.post(
         consultation: rows[0],
         tasks: created,
         attendance: attendance.length,
-        milestone: milestone && consultation.group_name ? milestone : null,
+        milestone: milestone && consultation.group_id ? milestone : null,
       });
     } catch (err) {
       await client.query('rollback');
@@ -2362,7 +2846,7 @@ app.patch(
       throw new HttpError(400, 'Status must be pending or resolved.');
     }
 
-    const { id, role, group_name: groupName } = req.profile;
+    const { id, role, group_name: groupName, group_id: groupId } = req.profile;
 
     const { rows } = await pool.query(
       `update public.action_items a
@@ -2373,10 +2857,10 @@ app.patch(
           and a.id = $5
           and (
                 ($2 = 'adviser' and c.adviser_id = $1)
-             or ($2 <> 'adviser' and (a.assignee_id = $1 or c.group_name = $3))
+             or ($2 <> 'adviser' and (a.assignee_id = $1 or ${groupVisibility({ creator: '$1', groupId: '$6', groupName: '$3' })}))
           )
     returning a.id, a.task_description, a.status`,
-      [id, role, groupName, status, req.params.id],
+      [id, role, groupName, status, req.params.id, groupId],
     );
 
     if (!rows[0]) throw new HttpError(404, 'Task not found, or you cannot modify it.');

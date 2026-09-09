@@ -19,6 +19,7 @@ import {
   Inbox,
   LayoutDashboard,
   ClipboardList,
+  Users2,
   ListChecks,
   Lightbulb,
   Loader2,
@@ -43,6 +44,7 @@ import CompleteSessionModal from './CompleteSessionModal.jsx';
 import HistoryView from './HistoryView.jsx';
 import RecordView from './RecordView.jsx';
 import ProposeTimeModal from './ProposeTimeModal.jsx';
+import GroupView from './GroupView.jsx';
 import { api } from '../lib/api.js';
 import { toDateInput, upcomingDatesFor } from '../lib/schedule.js';
 import { MILESTONES, MILESTONE_ACTIONS, readMilestones } from '../lib/milestones.js';
@@ -74,6 +76,9 @@ function navSections(isAdviser) {
         // An adviser answers requests; a student watches their own.
         { key: 'requests', label: isAdviser ? 'Requests' : 'My requests', icon: Inbox, badge: 'requests' },
         { key: 'tasks', label: 'Action items', icon: ListChecks, badge: 'tasks' },
+        // A student's group is the thing every consultation hangs off, so it
+        // sits with the daily work rather than under Account.
+        ...(isAdviser ? [] : [{ key: 'group', label: 'My group', icon: Users2 }]),
         // Only an adviser has hours to publish; a student books out of them.
         ...(isAdviser
           ? [{ key: 'availability', label: 'Consultation hours', icon: CalendarClock }]
@@ -168,6 +173,8 @@ export default function Dashboard({ session, onSignOut }) {
   const [slotsLoading, setSlotsLoading] = useState(false);
   // The group's real capstone progress, as rows of completed milestones.
   const [milestoneRows, setMilestoneRows] = useState([]);
+  // The student's thesis group, or null while they have not joined one.
+  const [group, setGroup] = useState(null);
   // Bumped to make the history view re-read itself after a wrap-up.
   const [historyKey, setHistoryKey] = useState(0);
   const [view, setView] = useState('overview');
@@ -205,6 +212,7 @@ export default function Dashboard({ session, onSignOut }) {
           historyResult,
           advisersResult,
           milestonesResult,
+          groupResult,
         ] = await Promise.all([
           api('/consultations/next', { token }),
           api('/tasks/pending', { token }),
@@ -219,6 +227,11 @@ export default function Dashboard({ session, onSignOut }) {
           // A student's own group progress. An adviser has many groups, so
           // theirs is read per group on the session they are wrapping up.
           isAdviser ? Promise.resolve(null) : api('/milestones', { token }).catch(() => null),
+          // Which thesis group they are in, if any. Everything a student books
+          // belongs to it, so the dashboard has to know before it offers to.
+          isAdviser
+            ? Promise.resolve(null)
+            : api('/thesis-groups/mine', { token }).catch(() => null),
         ]);
         setConsultation(nextResult.consultation);
         setTasks(tasksResult.tasks ?? []);
@@ -228,6 +241,7 @@ export default function Dashboard({ session, onSignOut }) {
         setHistory(historyResult?.consultations ?? []);
         setDirectory(advisersResult?.advisers ?? []);
         setMilestoneRows(milestonesResult?.milestones ?? []);
+        setGroup(groupResult?.group ?? null);
         refreshUnread();
       } catch (err) {
         if (err.status === 401) {
@@ -366,6 +380,20 @@ export default function Dashboard({ session, onSignOut }) {
   }
 
   /* Typing in the header search jumps to the list it filters. */
+  /**
+   * Every "book a consultation" button in the app goes through here.
+   *
+   * A student with no thesis group has nothing to attach a booking to, so they
+   * are sent to set one up rather than to a form the API would refuse.
+   */
+  function startBooking() {
+    if (!isAdviser && !group) {
+      setView('group');
+      return;
+    }
+    setBookingOpen(true);
+  }
+
   function handleSearch(value) {
     // Typing no longer drags you to the action-items page. That made sense when
     // search only filtered that one list; now the results panel spans every
@@ -659,7 +687,7 @@ export default function Dashboard({ session, onSignOut }) {
           onNavigate={goTo}
           onSignOut={onSignOut}
           onBook={() => {
-            setBookingOpen(true);
+            startBooking();
             setNavOpen(false);
           }}
           open={navOpen}
@@ -741,7 +769,7 @@ export default function Dashboard({ session, onSignOut }) {
                 onSeeAllRequests={() => goTo('requests')}
                 busyTaskId={busyTaskId}
                 onResolve={resolveTask}
-                onBook={() => setBookingOpen(true)}
+                onBook={startBooking}
                 onSeeAllTasks={() => goTo('tasks')}
                 progress={progress}
                 nextMilestone={nextMilestone}
@@ -760,6 +788,8 @@ export default function Dashboard({ session, onSignOut }) {
                 slotsLoading={slotsLoading}
                 activity={activity}
                 onSeeAllHistory={() => goTo('history')}
+                group={group}
+                onOpenGroup={() => goTo('group')}
               />
             ) : null}
 
@@ -770,7 +800,7 @@ export default function Dashboard({ session, onSignOut }) {
                 requests={requests}
                 busyRequestId={busyRequestId}
                 onDecide={decideRequest}
-                onBook={() => setBookingOpen(true)}
+                onBook={startBooking}
                 unreadByConsultation={unreadByConsultation}
                 onOpenThread={setThreadId}
                 myId={profile.id}
@@ -815,6 +845,15 @@ export default function Dashboard({ session, onSignOut }) {
               <RecordView token={token} isAdviser={isAdviser} profile={profile} />
             ) : null}
 
+            {view === 'group' && !isAdviser ? (
+              <GroupView
+                profile={{ ...profile, token }}
+                // Joining or leaving changes which consultations are visible,
+                // so the whole dashboard is stale afterwards.
+                onGroupChanged={() => loadDashboard({ silent: true })}
+              />
+            ) : null}
+
             {view === 'profile' ? <ProfileView profile={profile} onSignOut={onSignOut} /> : null}
           </main>
 
@@ -824,7 +863,7 @@ export default function Dashboard({ session, onSignOut }) {
             requestCount={noticeCount}
             taskCount={tasks.length}
             onNavigate={goTo}
-            onBook={() => setBookingOpen(true)}
+            onBook={startBooking}
           />
         </div>
       </div>
@@ -884,6 +923,7 @@ export default function Dashboard({ session, onSignOut }) {
         <BookingModal
           token={token}
           role={profile.role}
+          group={group}
           defaultGroupName={profile.group_name}
           onClose={() => setBookingOpen(false)}
           onCreated={(created, outcome) => {
@@ -1485,6 +1525,8 @@ function OverviewView({
   slotsLoading,
   activity,
   onSeeAllHistory,
+  group,
+  onOpenGroup,
 }) {
   const meetingDate = consultation ? new Date(consultation.meeting_date) : null;
   const daysAway = meetingDate
@@ -1511,6 +1553,10 @@ function OverviewView({
       {isAdviser && !loading && hourBlocks === 0 ? (
         <PublishHoursPrompt onSetHours={onSetHours} />
       ) : null}
+
+      {/* A student cannot book until they are in a group: the consultation
+          belongs to the group, not to whoever happened to fill the form in. */}
+      {!isAdviser && !loading && !group ? <JoinGroupPrompt onOpenGroup={onOpenGroup} /> : null}
 
       {/* ------------------------------------------------------- stat cards */}
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -1809,6 +1855,37 @@ function PublishHoursPrompt({ onSetHours }) {
         className="inline-flex items-center gap-1.5 rounded-lg bg-brand-700 px-3.5 py-2 text-body font-semibold text-white transition hover:bg-brand-600"
       >
         Set consultation hours
+        <ArrowRight className="h-4 w-4" aria-hidden="true" />
+      </button>
+    </section>
+  );
+}
+
+/**
+ * Shown to a student who is not in a thesis group. Booking is blocked until
+ * they are, because a consultation belongs to a group and there is nothing to
+ * attach one to -- and because the whole point of groups is that a session
+ * booked by one member reaches the others.
+ */
+function JoinGroupPrompt({ onOpenGroup }) {
+  return (
+    <section className="animate-rise flex flex-wrap items-center gap-4 rounded-2xl border border-brand-200 bg-brand-50/50 p-4">
+      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand-100 text-brand-700">
+        <Users2 className="h-5 w-5" aria-hidden="true" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="text-h3 font-semibold text-ink-900">You are not in a thesis group yet</p>
+        <p className="mt-0.5 text-body text-ink-600">
+          Create one or join with your leader&apos;s code. Consultations belong to the group, so
+          everything you book reaches your group mates too.
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={onOpenGroup}
+        className="inline-flex items-center gap-1.5 rounded-lg bg-brand-700 px-3.5 py-2 text-body font-semibold text-white transition hover:bg-brand-600"
+      >
+        Set up my group
         <ArrowRight className="h-4 w-4" aria-hidden="true" />
       </button>
     </section>
@@ -3302,6 +3379,7 @@ function ProfileView({ profile, onSignOut }) {
     ['Department', profile.department],
     ['Course', profile.course],
     ['Year level', profile.year_level],
+    ['Section', profile.section],
     ['Thesis group', profile.group_name],
     ['Role', profile.role, true],
   ].filter(([, value]) => Boolean(value));
