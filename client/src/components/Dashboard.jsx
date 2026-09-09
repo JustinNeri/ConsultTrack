@@ -6,13 +6,17 @@ import {
   Briefcase,
   CalendarDays,
   CalendarPlus,
+  Check,
   CheckCircle2,
   ChevronRight,
   Circle,
   Clock,
   GraduationCap,
+  Hourglass,
+  Inbox,
   LayoutDashboard,
   ListChecks,
+  Loader2,
   LogOut,
   Mail,
   MapPin,
@@ -43,11 +47,15 @@ const MILESTONES = [
 const COMPLETED_MILESTONES = 3;
 
 /** The sidebar only lists views this app can actually render. */
-const NAV_ITEMS = [
-  { key: 'overview', label: 'Dashboard', icon: LayoutDashboard },
-  { key: 'tasks', label: 'Action items', icon: ListChecks },
-  { key: 'profile', label: 'My profile', icon: UserRound },
-];
+function navItems(isAdviser) {
+  return [
+    { key: 'overview', label: 'Dashboard', icon: LayoutDashboard },
+    // An adviser answers requests; a student watches their own.
+    { key: 'requests', label: isAdviser ? 'Requests' : 'My requests', icon: Inbox, badge: true },
+    { key: 'tasks', label: 'Action items', icon: ListChecks },
+    { key: 'profile', label: 'My profile', icon: UserRound },
+  ];
+}
 
 const dateFormatter = new Intl.DateTimeFormat(undefined, {
   weekday: 'long',
@@ -74,9 +82,14 @@ export default function Dashboard({ session, onSignOut }) {
   const [consultation, setConsultation] = useState(null);
   const [schedule, setSchedule] = useState([]);
   const [tasks, setTasks] = useState([]);
+  // Consultation requests: an adviser's are waiting on their decision, a
+  // student's are waiting on their adviser.
+  const [requests, setRequests] = useState([]);
+  const [busyRequestId, setBusyRequestId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [busyTaskId, setBusyTaskId] = useState(null);
   const [bookingOpen, setBookingOpen] = useState(false);
   const [view, setView] = useState('overview');
@@ -96,13 +109,15 @@ export default function Dashboard({ session, onSignOut }) {
       try {
         // Advisers also get their full upcoming schedule - it is what their
         // side rail shows in place of the student milestone tracker.
-        const [nextResult, tasksResult, scheduleResult] = await Promise.all([
+        const [nextResult, tasksResult, requestsResult, scheduleResult] = await Promise.all([
           api('/consultations/next', { token }),
           api('/tasks/pending', { token }),
+          api('/consultations/requests', { token }),
           isAdviser ? api('/consultations?limit=6', { token }) : Promise.resolve(null),
         ]);
         setConsultation(nextResult.consultation);
         setTasks(tasksResult.tasks ?? []);
+        setRequests(requestsResult.requests ?? []);
         setSchedule(scheduleResult?.consultations ?? []);
       } catch (err) {
         if (err.status === 401) {
@@ -144,6 +159,40 @@ export default function Dashboard({ session, onSignOut }) {
     }
   }
 
+  /**
+   * The adviser's answer to a request. Approving turns it into a real session,
+   * so the whole dashboard is reloaded rather than patched in place - the
+   * upcoming consultation and the schedule both change.
+   */
+  async function decideRequest(request, decision, reason) {
+    if (busyRequestId) return;
+    setBusyRequestId(request.id);
+    setError('');
+    setNotice('');
+
+    try {
+      await api(`/consultations/${request.id}/decision`, {
+        method: 'PATCH',
+        token,
+        body: { decision, ...(reason ? { reason } : {}) },
+      });
+      setNotice(
+        decision === 'approved'
+          ? `Approved - "${request.topic}" is now on your schedule and the group can see it.`
+          : `Declined "${request.topic}". The group will see your reason.`,
+      );
+      await loadDashboard({ silent: true });
+    } catch (err) {
+      if (err.status === 401) {
+        onSignOut();
+        return;
+      }
+      setError(err.message);
+    } finally {
+      setBusyRequestId(null);
+    }
+  }
+
   /* Typing in the header search jumps to the list it filters. */
   function handleSearch(value) {
     setQuery(value);
@@ -165,6 +214,15 @@ export default function Dashboard({ session, onSignOut }) {
     );
   }, [query, tasks]);
 
+  // The bell counts what actually needs someone's attention: for an adviser the
+  // requests they have not answered, for a student the answers they have not
+  // seen yet (a decline stays in the list for a fortnight).
+  const pendingRequests = useMemo(
+    () => requests.filter((request) => request.status === 'pending'),
+    [requests],
+  );
+  const noticeCount = isAdviser ? pendingRequests.length : requests.length;
+
   const progress = Math.round((COMPLETED_MILESTONES / MILESTONES.length) * 100);
   const nextMilestone = MILESTONES[COMPLETED_MILESTONES] ?? 'All milestones complete';
   const firstName = profile.first_name || (profile.full_name || '').split(',').pop()?.trim();
@@ -176,6 +234,7 @@ export default function Dashboard({ session, onSignOut }) {
         <Sidebar
           view={view}
           isAdviser={isAdviser}
+          requestCount={noticeCount}
           onNavigate={goTo}
           onSignOut={onSignOut}
           onBook={() => {
@@ -191,10 +250,11 @@ export default function Dashboard({ session, onSignOut }) {
             profile={profile}
             query={query}
             onSearch={handleSearch}
-            taskCount={tasks.length}
+            noticeCount={noticeCount}
+            isAdviser={isAdviser}
             refreshing={refreshing}
             onRefresh={() => loadDashboard({ silent: true })}
-            onBell={() => goTo('tasks')}
+            onBell={() => goTo('requests')}
             onOpenNav={() => setNavOpen(true)}
           />
 
@@ -216,6 +276,24 @@ export default function Dashboard({ session, onSignOut }) {
               </div>
             ) : null}
 
+            {notice ? (
+              <div
+                role="status"
+                className="mb-6 flex items-start gap-2.5 rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3.5 text-sm font-medium text-emerald-800"
+              >
+                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                <span className="flex-1">{notice}</span>
+                <button
+                  type="button"
+                  onClick={() => setNotice('')}
+                  aria-label="Dismiss"
+                  className="rounded p-0.5 text-emerald-700/70 transition hover:text-emerald-900"
+                >
+                  <X className="h-4 w-4" aria-hidden="true" />
+                </button>
+              </div>
+            ) : null}
+
             {view === 'overview' ? (
               <OverviewView
                 displayName={displayName}
@@ -224,12 +302,27 @@ export default function Dashboard({ session, onSignOut }) {
                 consultation={consultation}
                 schedule={schedule}
                 tasks={tasks}
+                requests={requests}
+                busyRequestId={busyRequestId}
+                onDecide={decideRequest}
+                onSeeAllRequests={() => goTo('requests')}
                 busyTaskId={busyTaskId}
                 onResolve={resolveTask}
                 onBook={() => setBookingOpen(true)}
                 onSeeAllTasks={() => goTo('tasks')}
                 progress={progress}
                 nextMilestone={nextMilestone}
+              />
+            ) : null}
+
+            {view === 'requests' ? (
+              <RequestsView
+                loading={loading}
+                isAdviser={isAdviser}
+                requests={requests}
+                busyRequestId={busyRequestId}
+                onDecide={decideRequest}
+                onBook={() => setBookingOpen(true)}
               />
             ) : null}
 
@@ -256,8 +349,14 @@ export default function Dashboard({ session, onSignOut }) {
           role={profile.role}
           defaultGroupName={profile.group_name}
           onClose={() => setBookingOpen(false)}
-          onCreated={() => {
+          onCreated={(created) => {
             setBookingOpen(false);
+            setError('');
+            setNotice(
+              created?.status === 'pending'
+                ? 'Request sent. Your adviser has been notified - it becomes official once they approve it.'
+                : 'Consultation scheduled.',
+            );
             loadDashboard({ silent: true });
           }}
         />
@@ -268,7 +367,7 @@ export default function Dashboard({ session, onSignOut }) {
 
 /* ---------------------------------------------------------------- sidebar -- */
 
-function Sidebar({ view, isAdviser, onNavigate, onSignOut, onBook, open, onClose }) {
+function Sidebar({ view, isAdviser, requestCount, onNavigate, onSignOut, onBook, open, onClose }) {
   return (
     <>
       {/* Mobile backdrop. */}
@@ -310,8 +409,9 @@ function Sidebar({ view, isAdviser, onNavigate, onSignOut, onBook, open, onClose
           <p className="mb-1 px-3 text-[10px] font-bold uppercase tracking-widest text-brand-300/70">
             Menu
           </p>
-          {NAV_ITEMS.map(({ key, label, icon: Icon }) => {
+          {navItems(isAdviser).map(({ key, label, icon: Icon, badge }) => {
             const active = view === key;
+            const count = badge ? requestCount : 0;
             return (
               <button
                 key={key}
@@ -326,6 +426,15 @@ function Sidebar({ view, isAdviser, onNavigate, onSignOut, onBook, open, onClose
               >
                 <Icon className="h-5 w-5" aria-hidden="true" />
                 {label}
+                {count > 0 ? (
+                  <span
+                    className={`ml-auto flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-[10px] font-bold ${
+                      active ? 'bg-brand-700 text-white' : 'bg-amber-400 text-brand-950'
+                    }`}
+                  >
+                    {count > 9 ? '9+' : count}
+                  </span>
+                ) : null}
               </button>
             );
           })}
@@ -366,7 +475,17 @@ function Sidebar({ view, isAdviser, onNavigate, onSignOut, onBook, open, onClose
 
 /* ----------------------------------------------------------------- topbar -- */
 
-function TopBar({ profile, query, onSearch, taskCount, refreshing, onRefresh, onBell, onOpenNav }) {
+function TopBar({
+  profile,
+  query,
+  onSearch,
+  noticeCount,
+  isAdviser,
+  refreshing,
+  onRefresh,
+  onBell,
+  onOpenNav,
+}) {
   const subtitle = (
     profile.role === 'adviser'
       ? [profile.faculty_position || 'Adviser', profile.department]
@@ -412,16 +531,24 @@ function TopBar({ profile, query, onSearch, taskCount, refreshing, onRefresh, on
           <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} aria-hidden="true" />
         </button>
 
+        {/* The bell is the consultation-request notification: for an adviser,
+            requests awaiting their approval. */}
         <button
           type="button"
           onClick={onBell}
-          aria-label={`${taskCount} open action items`}
+          aria-label={
+            noticeCount === 0
+              ? 'No consultation requests'
+              : isAdviser
+                ? `${noticeCount} consultation ${noticeCount === 1 ? 'request' : 'requests'} awaiting your approval`
+                : `${noticeCount} consultation ${noticeCount === 1 ? 'request' : 'requests'} to review`
+          }
           className="relative rounded-xl p-2.5 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
         >
           <Bell className="h-4 w-4" aria-hidden="true" />
-          {taskCount > 0 ? (
+          {noticeCount > 0 ? (
             <span className="absolute right-1.5 top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-brand-600 px-1 text-[9px] font-bold text-white">
-              {taskCount > 9 ? '9+' : taskCount}
+              {noticeCount > 9 ? '9+' : noticeCount}
             </span>
           ) : null}
         </button>
@@ -472,6 +599,10 @@ function OverviewView({
   consultation,
   schedule,
   tasks,
+  requests,
+  busyRequestId,
+  onDecide,
+  onSeeAllRequests,
   busyTaskId,
   onResolve,
   onBook,
@@ -559,6 +690,39 @@ function OverviewView({
       {/* --------------------------------------------------- main + rail --- */}
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.65fr)_minmax(0,1fr)]">
         <div className="space-y-6">
+          {/* Requests come first when there are any: for an adviser this is the
+              queue they have to clear before anything is on the books. */}
+          {!loading && requests.length > 0 ? (
+            <section>
+              <SectionHeading
+                title={isAdviser ? 'Consultation requests' : 'Waiting on your adviser'}
+                action={
+                  requests.length > 2 ? (
+                    <button
+                      type="button"
+                      onClick={onSeeAllRequests}
+                      className="flex items-center gap-1 rounded-lg text-sm font-bold text-brand-700 hover:underline"
+                    >
+                      See all
+                      <ChevronRight className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                  ) : null
+                }
+              />
+              <div className="space-y-4">
+                {requests.slice(0, 2).map((request) => (
+                  <RequestCard
+                    key={request.id}
+                    request={request}
+                    isAdviser={isAdviser}
+                    busy={busyRequestId === request.id}
+                    onDecide={onDecide}
+                  />
+                ))}
+              </div>
+            </section>
+          ) : null}
+
           <section>
             <SectionHeading title="Upcoming consultation" />
             {loading ? (
@@ -781,6 +945,231 @@ function Detail({ icon: Icon, label, value }) {
         {label}
       </dt>
       <dd className="mt-1 text-sm font-bold text-slate-800">{value}</dd>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------ consultation requests */
+
+/**
+ * One request, from both sides of the approval.
+ *
+ * The adviser sees who is asking and the two buttons that answer it; declining
+ * opens a reason box, because the API insists on one and the group deserves it.
+ * The student sees the same request as a status: waiting, or declined with the
+ * adviser's note.
+ */
+function RequestCard({ request, isAdviser, busy, onDecide }) {
+  const [declining, setDeclining] = useState(false);
+  const [reason, setReason] = useState('');
+
+  const when = new Date(request.meeting_date);
+  const declined = request.status === 'declined';
+
+  return (
+    <article
+      className={`rounded-2xl bg-white p-5 shadow-card ring-1 transition ${
+        declined ? 'ring-rose-100' : 'ring-amber-200'
+      }`}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs font-bold uppercase tracking-widest text-brand-600">
+            {request.group_name || 'Consultation'}
+          </p>
+          <h3 className="mt-1.5 text-lg font-extrabold tracking-tight text-slate-900">
+            {request.topic}
+          </h3>
+        </div>
+        <span
+          className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-bold ${
+            declined ? 'bg-rose-50 text-rose-700' : 'bg-amber-50 text-amber-700'
+          }`}
+        >
+          {declined ? (
+            <X className="h-3.5 w-3.5" aria-hidden="true" />
+          ) : (
+            <Hourglass className="h-3.5 w-3.5" aria-hidden="true" />
+          )}
+          {declined ? 'Declined' : isAdviser ? 'Needs your approval' : 'Waiting for approval'}
+        </span>
+      </div>
+
+      <dl className="mt-4 grid gap-3 sm:grid-cols-3">
+        <Detail icon={CalendarDays} label="Date" value={dateFormatter.format(when)} />
+        <Detail icon={Clock} label="Time" value={timeFormatter.format(when)} />
+        <Detail icon={MapPin} label="Location" value={request.location || 'To be announced'} />
+      </dl>
+
+      {/* Who is on the other side of this request. */}
+      <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs font-medium text-slate-500">
+        {isAdviser ? (
+          <>
+            {request.requester_name ? (
+              <span className="flex items-center gap-1.5">
+                <User className="h-3.5 w-3.5" aria-hidden="true" />
+                {request.requester_name}
+                {request.requester_year_level ? ` - ${request.requester_year_level}` : ''}
+              </span>
+            ) : null}
+            {request.requester_email ? (
+              <a
+                href={`mailto:${request.requester_email}`}
+                className="flex items-center gap-1.5 font-semibold text-brand-700 hover:underline"
+              >
+                <Mail className="h-3.5 w-3.5" aria-hidden="true" />
+                {request.requester_email}
+              </a>
+            ) : null}
+          </>
+        ) : request.adviser_name ? (
+          <span className="flex items-center gap-1.5">
+            <User className="h-3.5 w-3.5" aria-hidden="true" />
+            {request.adviser_name}
+          </span>
+        ) : null}
+      </div>
+
+      {declined && request.decline_reason ? (
+        <p className="mt-4 rounded-xl bg-rose-50 px-3.5 py-3 text-sm font-medium text-rose-800">
+          <span className="font-bold">Adviser's note: </span>
+          {request.decline_reason}
+        </p>
+      ) : null}
+
+      {/* ------------------------------------------------ the decision --- */}
+      {isAdviser && request.status === 'pending' ? (
+        declining ? (
+          <div className="mt-4 border-t border-slate-100 pt-4">
+            <label
+              htmlFor={`decline-${request.id}`}
+              className="text-xs font-bold uppercase tracking-wide text-slate-600"
+            >
+              Why are you declining?
+            </label>
+            <textarea
+              id={`decline-${request.id}`}
+              rows={2}
+              value={reason}
+              onChange={(event) => setReason(event.target.value)}
+              placeholder="e.g. I have a class then - try Thursday afternoon."
+              className="mt-1.5 w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm text-slate-900 transition placeholder:text-slate-400 focus:border-brand-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-brand-500/10"
+            />
+            <div className="mt-3 flex flex-wrap justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setDeclining(false);
+                  setReason('');
+                }}
+                className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-bold text-slate-700 transition hover:bg-slate-50"
+              >
+                Back
+              </button>
+              <button
+                type="button"
+                disabled={busy || !reason.trim()}
+                onClick={() => onDecide(request, 'declined', reason.trim())}
+                className="flex items-center gap-2 rounded-xl bg-rose-600 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {busy ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <X className="h-4 w-4" aria-hidden="true" />
+                )}
+                Send decline
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="mt-4 flex flex-wrap justify-end gap-2.5 border-t border-slate-100 pt-4">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => setDeclining(true)}
+              className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-bold text-slate-700 transition hover:border-rose-200 hover:text-rose-700 disabled:opacity-60"
+            >
+              Decline
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => onDecide(request, 'approved')}
+              className="flex items-center gap-2 rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-emerald-900/15 transition hover:bg-emerald-700 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {busy ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <Check className="h-4 w-4" aria-hidden="true" />
+              )}
+              Approve
+            </button>
+          </div>
+        )
+      ) : null}
+    </article>
+  );
+}
+
+function RequestsView({ loading, isAdviser, requests, busyRequestId, onDecide, onBook }) {
+  const pending = requests.filter((request) => request.status === 'pending').length;
+
+  return (
+    <div>
+      <div className="mb-6">
+        <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">
+          {isAdviser ? 'Consultation requests' : 'My requests'}
+        </h1>
+        <p className="mt-1 text-sm text-slate-500">
+          {isAdviser
+            ? `${pending} ${pending === 1 ? 'request is' : 'requests are'} waiting for your approval. Nothing is on your schedule until you approve it.`
+            : 'Requests you have sent. Your adviser has to approve one before it becomes an official session.'}
+        </p>
+      </div>
+
+      {loading ? (
+        <div className="space-y-4">
+          {[0, 1].map((key) => (
+            <div key={key} className="h-56 animate-pulse rounded-2xl bg-slate-200/70" />
+          ))}
+        </div>
+      ) : requests.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-12 text-center">
+          <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-100">
+            <Inbox className="h-7 w-7 text-slate-400" aria-hidden="true" />
+          </span>
+          <p className="mt-4 font-bold text-slate-900">
+            {isAdviser ? 'No requests waiting' : 'No pending requests'}
+          </p>
+          <p className="mt-1 text-sm text-slate-500">
+            {isAdviser
+              ? 'When a group from your department books you, it lands here for approval.'
+              : 'Every request you sent has been answered.'}
+          </p>
+          {isAdviser ? null : (
+            <button
+              type="button"
+              onClick={onBook}
+              className="mt-5 inline-flex items-center gap-2 rounded-xl bg-brand-700 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-brand-800"
+            >
+              <CalendarPlus className="h-4 w-4" aria-hidden="true" />
+              Request consultation
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {requests.map((request) => (
+            <RequestCard
+              key={request.id}
+              request={request}
+              isAdviser={isAdviser}
+              busy={busyRequestId === request.id}
+              onDecide={onDecide}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

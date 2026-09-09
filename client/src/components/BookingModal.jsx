@@ -111,7 +111,7 @@ export default function BookingModal({ token, role, defaultGroupName, onClose, o
 
     setSubmitting(true);
     try {
-      await api('/consultations', {
+      const result = await api('/consultations', {
         method: 'POST',
         token,
         body: {
@@ -122,7 +122,9 @@ export default function BookingModal({ token, role, defaultGroupName, onClose, o
           ...(isAdviser ? {} : { adviser_id: form.adviserId }),
         },
       });
-      onCreated();
+      // A student's booking comes back 'pending' -- the dashboard says so rather
+      // than pretending the session is on the books.
+      onCreated(result.consultation ?? null);
     } catch (err) {
       setError(err.message);
       setSubmitting(false);
@@ -159,12 +161,12 @@ export default function BookingModal({ token, role, defaultGroupName, onClose, o
             </span>
             <div>
               <h2 id="booking-title" className="text-lg font-extrabold tracking-tight text-slate-900">
-                {isAdviser ? 'Schedule a consultation' : 'Book a consultation'}
+                {isAdviser ? 'Schedule a consultation' : 'Request a consultation'}
               </h2>
               <p className="mt-0.5 text-sm text-slate-500">
                 {isAdviser
                   ? 'Set a session for one of your thesis groups and share the agenda.'
-                  : 'Reserve a slot with your adviser and set the agenda ahead of time.'}
+                  : 'Your adviser has to approve the slot before it becomes official.'}
               </p>
             </div>
           </div>
@@ -385,13 +387,16 @@ export default function BookingModal({ token, role, defaultGroupName, onClose, o
               disabled={!canSubmit}
               className="flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-brand-700 to-brand-600 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-brand-900/20 transition hover:from-brand-800 hover:to-brand-700 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none"
             >
+              {/* A student is asking, not booking -- the adviser decides. */}
               {submitting ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                  Booking...
+                  {isAdviser ? 'Booking...' : 'Sending...'}
                 </>
-              ) : (
+              ) : isAdviser ? (
                 'Confirm booking'
+              ) : (
+                'Send request'
               )}
             </button>
           </div>

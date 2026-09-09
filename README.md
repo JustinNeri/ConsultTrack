@@ -110,17 +110,37 @@ development and no CORS round trip is needed.
 | POST | `/api/auth/send-code` | — | Email a 6-digit code (`signInWithOtp`) |
 | POST | `/api/auth/verify-code` | — | Verify the code (`verifyOtp`), return session |
 | GET | `/api/me` | Bearer | Current profile |
-| GET | `/api/consultations/next` | Bearer | Soonest scheduled consultation |
+| GET | `/api/consultations/next` | Bearer | Soonest **approved** consultation |
+| GET | `/api/consultations/requests` | Bearer | Requests awaiting a decision |
 | GET | `/api/tasks/pending` | Bearer | Open action items |
-| POST | `/api/consultations` | Bearer | Create a booking |
+| POST | `/api/consultations` | Bearer | Book (adviser) / request (student) |
+| PATCH | `/api/consultations/:id/decision` | Bearer | Adviser approves or declines |
 | PATCH | `/api/tasks/:id` | Bearer | Resolve / reopen a task |
 | GET | `/api/health` | — | Liveness + DB check |
 
 `PATCH /api/tasks/:id` is not in the original spec — the dashboard's checkable task
 cards need something to write to.
 
+### Consultation approval
+
+A student's booking is a *request*, not a booking. It is created with status
+`pending` and appears in the adviser's inbox (`GET /api/consultations/requests`,
+surfaced as the bell badge and the "Requests" view). Only when the adviser
+approves does it become `scheduled` — and `scheduled` is the status every
+"upcoming consultation" query filters on, so an unanswered request can never show
+up as an official session. Declining keeps the row as `declined` with the
+adviser's reason, which is how the group hears the answer. An adviser booking one
+of their own groups is `scheduled` immediately: they are the approver.
+
+Notifications are in-app only (the bell, the sidebar badge and the request list).
+Nothing is emailed — see the placeholders below.
+
 ## Known placeholders
 
+- **Email notifications** are not wired. The adviser is notified inside the app
+  (bell badge + request list); nothing lands in their inbox. Supabase Auth only
+  sends the sign-in code. Add a mailer if requests need to reach advisers who are
+  not looking at the dashboard.
 - **Attachments** in the booking modal are UI only. Files are listed but not
   uploaded; wire them to a Supabase Storage bucket when you need them.
 - **Capstone milestones** (`MILESTONES` / `COMPLETED_MILESTONES` in `Dashboard.jsx`)

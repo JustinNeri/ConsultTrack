@@ -487,6 +487,10 @@ app.get(
 /**
  * Upcoming scheduled consultations the caller may see: advisers get the ones
  * they advise, students the ones booked for their thesis group.
+ *
+ * `status = 'scheduled'` is what makes the approval step real -- a request the
+ * adviser has not accepted yet is still 'pending' and never appears here, so it
+ * cannot be mistaken for an official session.
  */
 async function upcomingConsultations(profile, limit) {
   const { id, role, group_name: groupName } = profile;
@@ -541,6 +545,109 @@ app.get(
     const limit = Number.isFinite(requested) ? Math.min(Math.max(requested, 1), 50) : 10;
 
     res.json({ consultations: await upcomingConsultations(req.profile, limit) });
+  }),
+);
+
+/**
+ * GET /api/consultations/requests
+ *
+ * The approval inbox, and the notification the adviser sees. For an adviser it
+ * is every request still waiting on their decision. For a student it is their
+ * group's own requests: the ones still pending, plus any declined in the last
+ * fortnight, which is how they find out the answer was no.
+ */
+app.get(
+  '/api/consultations/requests',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const { id, role, group_name: groupName } = req.profile;
+
+    const { rows } = await pool.query(
+      `select c.id,
+              c.group_name,
+              c.topic,
+              c.location,
+              c.meeting_date,
+              c.status,
+              c.created_at,
+              c.responded_at,
+              c.decline_reason,
+              s.full_name  as requester_name,
+              s.email      as requester_email,
+              s.course     as requester_course,
+              s.year_level as requester_year_level,
+              p.full_name  as adviser_name,
+              p.email      as adviser_email
+         from public.consultations c
+         left join public.profiles s on s.id = c.created_by
+         left join public.profiles p on p.id = c.adviser_id
+        where (
+                ($2 = 'adviser' and c.adviser_id = $1 and c.status = 'pending')
+             or ($2 <> 'adviser'
+                 and (c.group_name = $3 or c.created_by = $1)
+                 and (
+                       c.status = 'pending'
+                    or (c.status = 'declined' and c.responded_at > now() - interval '14 days')
+                 ))
+              )
+        order by c.meeting_date asc`,
+      [id, role, groupName],
+    );
+
+    res.json({ requests: rows });
+  }),
+);
+
+/**
+ * PATCH /api/consultations/:id/decision
+ * Body: { decision: 'approved' | 'declined', reason? }
+ *
+ * The adviser's answer to a request. Approving is what makes a consultation
+ * official ('scheduled'); declining records the reason so the student sees why.
+ * Only the adviser the request was addressed to may answer it, and only while it
+ * is still pending -- so a second click cannot undo a decision.
+ */
+app.patch(
+  '/api/consultations/:id/decision',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    if (req.profile.role !== 'adviser') {
+      throw new HttpError(403, 'Only the adviser can approve a consultation request.');
+    }
+    if (!UUID_RE.test(String(req.params.id))) {
+      throw new HttpError(400, 'That request is not valid.');
+    }
+
+    const decision = String(req.body?.decision ?? '').trim();
+    if (!['approved', 'declined'].includes(decision)) {
+      throw new HttpError(400, 'Decision must be approved or declined.');
+    }
+
+    const reason = String(req.body?.reason ?? '').trim().slice(0, 500);
+    if (decision === 'declined' && !reason) {
+      throw new HttpError(400, 'Give the group a reason for declining.');
+    }
+
+    const { rows } = await pool.query(
+      `update public.consultations
+          set status         = $3,
+              responded_at   = now(),
+              decline_reason = $4
+        where id = $1
+          and adviser_id = $2
+          and status = 'pending'
+    returning id, group_name, topic, location, meeting_date, status,
+              responded_at, decline_reason`,
+      [req.params.id, req.profile.id, decision === 'approved' ? 'scheduled' : 'declined',
+       decision === 'declined' ? reason : null],
+    );
+
+    if (!rows[0]) {
+      // Either it is not theirs, or somebody already answered it.
+      throw new HttpError(404, 'That request is no longer pending.');
+    }
+
+    res.json({ consultation: rows[0] });
   }),
 );
 
@@ -614,6 +721,9 @@ app.get(
 /**
  * POST /api/consultations
  * Body: { topic, meeting_date (ISO), location?, group_name?, adviser_id? }
+ *
+ * A student's booking is a *request*: it is created 'pending' and waits for the
+ * adviser's decision. Read the returned `status` to tell the two apart.
  */
 app.post(
   '/api/consultations',
@@ -660,12 +770,17 @@ app.post(
       throw new HttpError(403, `You can only book advisers from ${bookerDepartment}.`);
     }
 
+    // A student is asking; the adviser has to say yes before it counts. An
+    // adviser booking one of their own groups is already the approver, so their
+    // session is official the moment it is created.
+    const status = adviserId === req.profile.id ? 'scheduled' : 'pending';
+
     const { rows } = await pool.query(
       `insert into public.consultations
               (adviser_id, group_name, topic, location, meeting_date, status, created_by)
-       values ($1, $2, $3, $4, $5, 'scheduled', $6)
+       values ($1, $2, $3, $4, $5, $7, $6)
     returning id, adviser_id, group_name, topic, location, meeting_date, status, created_at`,
-      [adviserId, groupName, topic, location, meetingDate.toISOString(), req.profile.id],
+      [adviserId, groupName, topic, location, meetingDate.toISOString(), req.profile.id, status],
     );
 
     res.status(201).json({ consultation: rows[0] });
