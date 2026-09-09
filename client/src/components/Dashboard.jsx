@@ -2008,27 +2008,41 @@ function greetingFor(date) {
   return 'Good evening';
 }
 
+/*
+ * The greeting is the only element on the page that can carry the identity
+ * without lying about anything, so it does.
+ *
+ * On a phone there is no maroon chrome at all -- the sidebar that holds it on a
+ * desktop is off-screen -- which left the whole app reading as grey cards on a
+ * grey page, nothing like the sign-in screen the student just came through.
+ * Deepening the canvas alone could not fix that: the problem was not contrast
+ * between card and ground, it was that no brand colour was on the page.
+ */
 function GreetingHeader({ displayName, isAdviser }) {
   const now = new Date();
   return (
-    <section className="animate-rise flex flex-wrap items-start justify-between gap-4">
-      <div className="min-w-0">
-        <h2 className="text-h1 font-bold tracking-tight text-ink-900">
-          {greetingFor(now)}, {displayName}
-        </h2>
-        <p className="mt-1 text-body text-ink-500">
-          {isAdviser
-            ? "Here's what's happening across your groups today."
-            : "Here's what's happening with your capstone today."}
+    <section className="animate-rise overflow-hidden rounded-2xl bg-gradient-to-br from-brand-800 via-brand-900 to-brand-950 p-5 shadow-raised sm:p-6">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <div className="min-w-0">
+          <h2 className="text-h1 font-bold tracking-tight text-white">
+            {greetingFor(now)}, {displayName}
+          </h2>
+          <p className="mt-1 text-body text-brand-100/80">
+            {isAdviser
+              ? "Here's what's happening across your groups today."
+              : "Here's what's happening with your capstone today."}
+          </p>
+        </div>
+        <p className="flex shrink-0 items-center gap-2 self-start rounded-xl bg-white/10 px-3 py-2 text-body ring-1 ring-white/15 sm:self-auto">
+          <CalendarDays className="h-4 w-4 shrink-0 text-brand-200" aria-hidden="true" />
+          <span className="leading-tight">
+            <span className="block font-semibold text-white">{todayFormatter.format(now)}</span>
+            <span className="block text-small text-brand-200/80">
+              {weekdayFormatter.format(now)}
+            </span>
+          </span>
         </p>
       </div>
-      <p className="flex shrink-0 items-center gap-2 text-body text-ink-500">
-        <CalendarDays className="h-4 w-4 text-ink-400" aria-hidden="true" />
-        <span className="leading-tight">
-          <span className="block font-medium text-ink-700">{todayFormatter.format(now)}</span>
-          <span className="block text-small text-ink-400">{weekdayFormatter.format(now)}</span>
-        </span>
-      </p>
     </section>
   );
 }

@@ -91,7 +91,7 @@
    * belongs to the same family as the maroon on the sign-in screen instead of
    * being a cool grey borrowed from somewhere else.
    */
-  --color-canvas: #f3eff1;
+  --color-canvas: #f0eaed;
 
   /*
    * Contact shadows. Each is a tight 1px seat plus one soft spread; the alpha
