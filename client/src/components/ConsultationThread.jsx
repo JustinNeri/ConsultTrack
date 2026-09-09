@@ -3,13 +3,22 @@ import {
   AlertCircle,
   CalendarDays,
   Clock,
+  Download,
   Loader2,
   MapPin,
   MessageSquare,
+  Paperclip,
   Send,
   X,
 } from 'lucide-react';
 import { api } from '../lib/api.js';
+
+/** "2.4 MB", "812 KB". */
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 /** How often an open thread re-reads itself. */
 const POLL_MS = 6000;
@@ -56,6 +65,10 @@ export default function ConsultationThread({
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
+  // Files sent with the booking. Fetched once: unlike messages they do not
+  // change while a thread is open, so the poll leaves them alone.
+  const [attachments, setAttachments] = useState([]);
+  const [openingFile, setOpeningFile] = useState(null);
 
   const endRef = useRef(null);
   const composerRef = useRef(null);
@@ -84,6 +97,35 @@ export default function ConsultationThread({
   useEffect(() => {
     load();
   }, [load]);
+
+  /* The attachment listing, read once when the thread opens. */
+  useEffect(() => {
+    const controller = new AbortController();
+    api(`/consultations/${consultationId}/attachments`, { token, signal: controller.signal })
+      .then((result) => setAttachments(result.attachments ?? []))
+      // A thread is still usable without its file list, so this stays quiet.
+      .catch(() => {});
+    return () => controller.abort();
+  }, [consultationId, token]);
+
+  /**
+   * Opens one attachment.
+   *
+   * The bucket is private, so the API mints a signed URL good for two minutes
+   * and the browser follows it. Nothing is downloaded through this origin.
+   */
+  async function openAttachment(attachment) {
+    if (openingFile) return;
+    setOpeningFile(attachment.id);
+    try {
+      const result = await api(`/attachments/${attachment.id}/url`, { token });
+      window.open(result.url, '_blank', 'noopener,noreferrer');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setOpeningFile(null);
+    }
+  }
 
   /* A thread left open keeps up with the other side. */
   useEffect(() => {
@@ -219,6 +261,45 @@ export default function ConsultationThread({
           <div className="border-b border-rose-100 bg-rose-50 px-5 py-3 text-sm text-rose-800">
             <span className="font-bold">Declined: </span>
             {consultation.decline_reason}
+          </div>
+        ) : null}
+
+        {/* ----------------------------------------------------- attachments */}
+        {attachments.length > 0 ? (
+          <div className="border-b border-ink-200 bg-white px-5 py-3">
+            <p className="flex items-center gap-1.5 text-[12px] font-medium text-ink-700">
+              <Paperclip className="h-3.5 w-3.5 text-ink-400" aria-hidden="true" />
+              {attachments.length} {attachments.length === 1 ? 'file' : 'files'} sent with this
+              booking
+            </p>
+            <ul className="mt-2 space-y-1.5">
+              {attachments.map((file) => (
+                <li key={file.id}>
+                  <button
+                    type="button"
+                    onClick={() => openAttachment(file)}
+                    disabled={openingFile === file.id}
+                    className="flex w-full items-center gap-2.5 rounded-lg border border-ink-200 px-3 py-2 text-left transition hover:border-brand-300 hover:bg-brand-50/50 disabled:opacity-60"
+                  >
+                    {openingFile === file.id ? (
+                      <Loader2
+                        className="h-4 w-4 shrink-0 animate-spin text-brand-700"
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <Download className="h-4 w-4 shrink-0 text-ink-400" aria-hidden="true" />
+                    )}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm text-ink-900">{file.file_name}</span>
+                      <span className="block truncate text-xs text-ink-500">
+                        {formatBytes(file.byte_size)}
+                        {file.uploaded_by_name ? ` \u00b7 ${file.uploaded_by_name}` : ''}
+                      </span>
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
           </div>
         ) : null}
 

@@ -26,6 +26,7 @@ client/                    Vite + React app
   src/lib/api.js           fetch wrapper
   src/lib/session.js       localStorage session
   src/lib/schedule.js      weekday / slot helpers
+  src/lib/milestones.js    the capstone sequence, shared by the tracker and wrap-up
 supabase/migrations/
   0001_init.sql            schema, RLS, auth trigger
   0002_restrict_function_grants.sql
@@ -34,6 +35,8 @@ supabase/migrations/
   0007_messages_and_session_wrapup.sql threads, minutes, action items
   0008_attendance.sql                  who was in the room
   0009_counter_proposals.sql           counter-offers, moves, cancellation
+  0010_group_milestones.sql            capstone progress, per thesis group
+  0011_consultation_attachments.sql    booking attachments + private bucket
 ```
 
 ## 1. Database

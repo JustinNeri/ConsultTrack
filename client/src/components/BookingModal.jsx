@@ -16,6 +16,34 @@ import { slotTimeFormatter, toDateInput, upcomingDatesFor } from '../lib/schedul
 import SlotPicker from './SlotPicker.jsx';
 
 const MAX_ATTACHMENTS = 5;
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+
+/**
+ * What the bucket accepts, mirrored from the API so a file is refused here --
+ * with a reason, before anything is uploaded -- rather than after a round trip.
+ */
+const ATTACHMENT_TYPES = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'text/plain',
+]);
+
+const ATTACHMENT_ACCEPT =
+  '.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.png,.jpg,.jpeg,.gif,.webp,.txt';
+
+/** "2.4 MB", "812 KB". */
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 export default function BookingModal({ token, role, defaultGroupName, onClose, onCreated }) {
   // An adviser books for themselves, so they pick no adviser and the server
@@ -49,6 +77,8 @@ export default function BookingModal({ token, role, defaultGroupName, onClose, o
   const [slotsVersion, setSlotsVersion] = useState(0);
 
   const [files, setFiles] = useState([]);
+  // Which file is going up, so the button can say so instead of hanging.
+  const [uploading, setUploading] = useState(null);
   const [dragging, setDragging] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -157,8 +187,26 @@ export default function BookingModal({ token, role, defaultGroupName, onClose, o
 
   /* ------------------------------------------------------ file drop zone -- */
   function addFiles(incoming) {
-    const accepted = Array.from(incoming).slice(0, MAX_ATTACHMENTS - files.length);
+    const room = MAX_ATTACHMENTS - files.length;
+    if (room <= 0) {
+      setError(`You can attach ${MAX_ATTACHMENTS} files.`);
+      return;
+    }
+
+    const accepted = [];
+    const rejected = [];
+    for (const file of Array.from(incoming).slice(0, room)) {
+      if (!ATTACHMENT_TYPES.has(file.type)) {
+        rejected.push(`${file.name} is not a supported file type`);
+      } else if (file.size > MAX_ATTACHMENT_BYTES) {
+        rejected.push(`${file.name} is over 10 MB`);
+      } else {
+        accepted.push(file);
+      }
+    }
+
     if (accepted.length) setFiles((prev) => [...prev, ...accepted]);
+    setError(rejected.length ? rejected.join('. ') + '.' : '');
   }
 
   function handleDrop(event) {
@@ -209,9 +257,43 @@ export default function BookingModal({ token, role, defaultGroupName, onClose, o
           ...(isAdviser ? {} : { adviser_id: form.adviserId }),
         },
       });
+      const consultation = result.consultation ?? null;
+
+      /*
+       * Files go up after the booking, because until it exists there is nothing
+       * to hang them off -- the storage path is keyed by consultation id.
+       *
+       * A failure here does not fail the booking: the session is already real
+       * and re-submitting the form would double-book it. The group is told what
+       * did not arrive and can send it in the consultation thread instead.
+       */
+      if (consultation?.id && files.length > 0) {
+        const failed = [];
+        for (const file of files) {
+          setUploading(file.name);
+          try {
+            await api(
+              `/consultations/${consultation.id}/attachments` +
+                `?name=${encodeURIComponent(file.name)}&type=${encodeURIComponent(file.type)}`,
+              { method: 'POST', token, raw: file },
+            );
+          } catch (uploadError) {
+            failed.push(`${file.name} (${uploadError.message})`);
+          }
+        }
+        setUploading(null);
+
+        if (failed.length) {
+          onCreated(consultation, {
+            warning: `Booked, but these files did not upload: ${failed.join(', ')}.`,
+          });
+          return;
+        }
+      }
+
       // A student's booking comes back 'pending' -- the dashboard says so rather
       // than pretending the session is on the books.
-      onCreated(result.consultation ?? null);
+      onCreated(consultation);
     } catch (err) {
       setError(err.message);
       setSubmitting(false);
@@ -451,7 +533,8 @@ export default function BookingModal({ token, role, defaultGroupName, onClose, o
                 Drop files here, or <span className="text-brand-700">browse</span>
               </p>
               <p className="mt-0.5 text-xs text-ink-400">
-                PDF, DOCX or images - up to {MAX_ATTACHMENTS} files
+                PDF, Word, PowerPoint, images or text - up to {MAX_ATTACHMENTS} files, 10 MB
+                each
               </p>
             </button>
 
@@ -459,6 +542,7 @@ export default function BookingModal({ token, role, defaultGroupName, onClose, o
               ref={fileInputRef}
               type="file"
               multiple
+              accept={ATTACHMENT_ACCEPT}
               className="hidden"
               onChange={(event) => {
                 addFiles(event.target.files);
@@ -473,7 +557,10 @@ export default function BookingModal({ token, role, defaultGroupName, onClose, o
                     key={`${file.name}-${index}`}
                     className="flex items-center justify-between rounded-lg bg-ink-50 px-3 py-2 text-sm"
                   >
-                    <span className="truncate text-ink-700">{file.name}</span>
+                    <span className="min-w-0 flex-1 truncate text-ink-700">{file.name}</span>
+                    <span className="tnum ml-3 shrink-0 text-xs text-ink-500">
+                      {formatBytes(file.size)}
+                    </span>
                     <button
                       type="button"
                       onClick={() => setFiles((prev) => prev.filter((_, i) => i !== index))}
@@ -488,7 +575,7 @@ export default function BookingModal({ token, role, defaultGroupName, onClose, o
             ) : null}
 
             <p className="mt-2 text-xs text-ink-400">
-              Interface only for now - files are listed here but not uploaded with the booking.
+              Sent with the booking and visible to your adviser in the consultation thread.
             </p>
           </div>
 
@@ -520,7 +607,11 @@ export default function BookingModal({ token, role, defaultGroupName, onClose, o
               {submitting ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                  {isAdviser ? 'Booking...' : 'Sending...'}
+                  {uploading
+                    ? `Uploading ${uploading}...`
+                    : isAdviser
+                      ? 'Booking...'
+                      : 'Sending...'}
                 </>
               ) : isAdviser ? (
                 'Confirm booking'

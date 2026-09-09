@@ -10,6 +10,7 @@
 
 import 'dotenv/config';
 import dns from 'node:dns';
+import { randomUUID } from 'node:crypto';
 import express from 'express';
 import cors from 'cors';
 import pg from 'pg';
@@ -173,6 +174,9 @@ async function requireAuth(req, _res, next) {
     );
 
     req.user = data.user;
+    // Storage is reached as the caller, not as the service, so their token has
+    // to outlive the check that validated it.
+    req.accessToken = token;
     req.profile = rows[0] ?? {
       id: data.user.id,
       full_name: null,
@@ -1782,6 +1786,370 @@ app.get(
   }),
 );
 
+/* ----------------------------------------------------------- attachments -- */
+
+const ATTACHMENT_BUCKET = 'consultation-attachments';
+const MAX_ATTACHMENTS_PER_CONSULTATION = 5;
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+
+// Mirrors allowed_mime_types on the bucket. Kept here too so a rejection is a
+// readable 400 rather than a storage error the user cannot act on.
+const ATTACHMENT_TYPES = new Map([
+  ['application/pdf', '.pdf'],
+  ['application/msword', '.doc'],
+  ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', '.docx'],
+  ['application/vnd.openxmlformats-officedocument.presentationml.presentation', '.pptx'],
+  ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', '.xlsx'],
+  ['image/png', '.png'],
+  ['image/jpeg', '.jpg'],
+  ['image/gif', '.gif'],
+  ['image/webp', '.webp'],
+  ['text/plain', '.txt'],
+]);
+
+/**
+ * A Supabase client acting as the signed-in user.
+ *
+ * Storage RLS is written against auth.uid(), so uploading with the shared anon
+ * client would be an anonymous write and would be refused. This borrows the
+ * caller's own token for the one call that needs it.
+ */
+function storageAs(accessToken) {
+  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    global: { headers: { Authorization: `Bearer ${accessToken}` } },
+  });
+}
+
+/** Strips anything that could steer a path or a Content-Disposition header. */
+function safeFileName(raw) {
+  const cleaned = String(raw ?? '')
+    .replace(/[\r\n"\\]/g, '')
+    .replace(/[/\\]/g, '-')
+    .trim()
+    .slice(0, 120);
+  return cleaned || 'attachment';
+}
+
+/**
+ * GET /api/consultations/:id/attachments
+ *
+ * The listing. Reads the metadata table only -- the bucket is never enumerated,
+ * so a stray object with no row is invisible to the app.
+ */
+app.get(
+  '/api/consultations/:id/attachments',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const consultation = await loadConsultationFor(req.profile, req.params.id);
+
+    const { rows } = await pool.query(
+      `select a.id, a.file_name, a.content_type, a.byte_size, a.created_at,
+              p.full_name as uploaded_by_name
+         from public.consultation_attachments a
+         left join public.profiles p on p.id = a.uploaded_by
+        where a.consultation_id = $1
+        order by a.created_at asc`,
+      [consultation.id],
+    );
+
+    res.json({ attachments: rows });
+  }),
+);
+
+/**
+ * POST /api/consultations/:id/attachments?name=<filename>&type=<mime>
+ * Body: the raw bytes, as application/octet-stream.
+ *
+ * Raw rather than multipart because one file per request keeps the parser out
+ * of the dependency list, and the client uploads them one at a time anyway so
+ * it can report which one failed.
+ *
+ * The stored path is `<consultation id>/<uuid><ext>` and never contains the
+ * uploaded filename: two groups both sending "Chapter4.docx" must not collide,
+ * and a filename is attacker-controlled input to a path.
+ */
+app.post(
+  '/api/consultations/:id/attachments',
+  requireAuth,
+  express.raw({ type: 'application/octet-stream', limit: MAX_ATTACHMENT_BYTES }),
+  asyncRoute(async (req, res) => {
+    const consultation = await loadConsultationFor(req.profile, req.params.id);
+
+    const bytes = Buffer.isBuffer(req.body) ? req.body : null;
+    if (!bytes?.length) throw new HttpError(400, 'That file was empty.');
+    if (bytes.length > MAX_ATTACHMENT_BYTES) {
+      throw new HttpError(413, 'Files are limited to 10 MB.');
+    }
+
+    const contentType = String(req.query.type ?? '').trim().toLowerCase();
+    if (!ATTACHMENT_TYPES.has(contentType)) {
+      throw new HttpError(415, 'Attach a PDF, Word or PowerPoint file, an image, or plain text.');
+    }
+
+    const fileName = safeFileName(req.query.name);
+
+    const { rows: existing } = await pool.query(
+      `select count(*)::int as count from public.consultation_attachments
+        where consultation_id = $1`,
+      [consultation.id],
+    );
+    if (existing[0].count >= MAX_ATTACHMENTS_PER_CONSULTATION) {
+      throw new HttpError(
+        409,
+        `A consultation can carry ${MAX_ATTACHMENTS_PER_CONSULTATION} files.`,
+      );
+    }
+
+    const storagePath = `${consultation.id}/${randomUUID()}${ATTACHMENT_TYPES.get(contentType)}`;
+
+    const { error: uploadError } = await storageAs(req.accessToken)
+      .storage.from(ATTACHMENT_BUCKET)
+      .upload(storagePath, bytes, { contentType, upsert: false });
+
+    if (uploadError) {
+      throw new HttpError(502, `Could not store that file: ${uploadError.message}`);
+    }
+
+    try {
+      const { rows } = await pool.query(
+        `insert into public.consultation_attachments
+                (consultation_id, storage_path, file_name, content_type, byte_size, uploaded_by)
+              values ($1, $2, $3, $4, $5, $6)
+           returning id, file_name, content_type, byte_size, created_at`,
+        [consultation.id, storagePath, fileName, contentType, bytes.length, req.profile.id],
+      );
+      res.status(201).json({ attachment: rows[0] });
+    } catch (err) {
+      // The bytes landed but the row did not, which would leave a file nothing
+      // can reach. Take the object back out rather than leak it.
+      await storageAs(req.accessToken)
+        .storage.from(ATTACHMENT_BUCKET)
+        .remove([storagePath])
+        .catch(() => {});
+      throw err;
+    }
+  }),
+);
+
+/**
+ * GET /api/attachments/:id/url
+ *
+ * A short-lived signed URL. The bucket is private, so this is the only way to
+ * read a file, and it is minted only for someone who already passes the
+ * consultation's own visibility check.
+ */
+app.get(
+  '/api/attachments/:id/url',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const id = String(req.params.id);
+    if (!UUID_RE.test(id)) throw new HttpError(400, 'That attachment is not valid.');
+
+    const { rows } = await pool.query(
+      `select id, consultation_id, storage_path, file_name
+         from public.consultation_attachments
+        where id = $1
+        limit 1`,
+      [id],
+    );
+    const attachment = rows[0];
+    if (!attachment) throw new HttpError(404, 'That file was not found.');
+
+    // Throws 403/404 unless the caller may see the consultation it hangs off.
+    await loadConsultationFor(req.profile, attachment.consultation_id);
+
+    const { data, error } = await storageAs(req.accessToken)
+      .storage.from(ATTACHMENT_BUCKET)
+      .createSignedUrl(attachment.storage_path, 120, { download: attachment.file_name });
+
+    if (error || !data?.signedUrl) {
+      throw new HttpError(502, 'Could not open that file.');
+    }
+
+    res.json({ url: data.signedUrl, fileName: attachment.file_name });
+  }),
+);
+
+/**
+ * DELETE /api/attachments/:id
+ *
+ * Only whoever sent the file may take it back, and only while the consultation
+ * has not been wrapped up -- the record cites what was submitted.
+ */
+app.delete(
+  '/api/attachments/:id',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const id = String(req.params.id);
+    if (!UUID_RE.test(id)) throw new HttpError(400, 'That attachment is not valid.');
+
+    const { rows } = await pool.query(
+      `select id, consultation_id, storage_path, uploaded_by
+         from public.consultation_attachments
+        where id = $1
+        limit 1`,
+      [id],
+    );
+    const attachment = rows[0];
+    if (!attachment) throw new HttpError(404, 'That file was not found.');
+
+    const consultation = await loadConsultationFor(req.profile, attachment.consultation_id);
+    if (attachment.uploaded_by !== req.profile.id) {
+      throw new HttpError(403, 'Only whoever attached that file can remove it.');
+    }
+    if (consultation.status === 'completed') {
+      throw new HttpError(409, 'That session is wrapped up; its files are part of the record.');
+    }
+
+    await pool.query(`delete from public.consultation_attachments where id = $1`, [id]);
+    await storageAs(req.accessToken)
+      .storage.from(ATTACHMENT_BUCKET)
+      .remove([attachment.storage_path])
+      .catch(() => {});
+
+    res.json({ id });
+  }),
+);
+
+/* ------------------------------------------------------------ milestones -- */
+
+/**
+ * The capstone sequence, in order. Must match the check constraint on
+ * public.group_milestones; the client owns the display labels.
+ */
+const MILESTONE_KEYS = [
+  'title_proposal',
+  'chapters_1_3',
+  'data_gathering',
+  'system_review',
+  'final_defense',
+];
+
+/**
+ * Which group's milestones this caller is asking about.
+ *
+ * A student may only ever see their own, so the query string is ignored for
+ * them. An adviser has to name one, and only gets it if they actually hold a
+ * consultation with that group -- otherwise the endpoint would enumerate every
+ * group in the school.
+ */
+async function resolveMilestoneGroup(profile, requested) {
+  if (profile.role !== 'adviser') return profile.group_name ?? null;
+
+  const groupName = String(requested ?? '').trim();
+  if (!groupName) return null;
+
+  const { rows } = await pool.query(
+    `select 1 from public.consultations
+      where group_name = $1 and adviser_id = $2
+      limit 1`,
+    [groupName, profile.id],
+  );
+  return rows.length ? groupName : null;
+}
+
+/** Throws unless this adviser has a consultation with the named group. */
+async function assertAdvisesGroup(profile, groupName) {
+  const { rows } = await pool.query(
+    `select 1 from public.consultations
+      where group_name = $1 and adviser_id = $2
+      limit 1`,
+    [groupName, profile.id],
+  );
+  if (!rows.length) {
+    throw new HttpError(403, 'You do not advise that group.');
+  }
+}
+
+/**
+ * GET /api/milestones?group=<name>
+ *
+ * A group's capstone progress. Students get their own group and nothing else;
+ * an adviser names the group they want. An unknown or unadvised group comes back
+ * empty rather than 403, because "no progress recorded" and "not your group"
+ * look the same from a dashboard and only one of them is worth an error.
+ */
+app.get(
+  '/api/milestones',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const groupName = await resolveMilestoneGroup(req.profile, req.query.group);
+    if (!groupName) {
+      return res.json({ groupName: null, order: MILESTONE_KEYS, milestones: [] });
+    }
+
+    const { rows } = await pool.query(
+      `select m.milestone,
+              m.completed_at,
+              m.consultation_id,
+              p.full_name as completed_by_name
+         from public.group_milestones m
+         left join public.profiles p on p.id = m.completed_by
+        where m.group_name = $1`,
+      [groupName],
+    );
+
+    res.json({ groupName, order: MILESTONE_KEYS, milestones: rows });
+  }),
+);
+
+/**
+ * PUT /api/milestones/:milestone
+ * Body: { groupName, completed?: boolean, consultationId?: uuid }
+ *
+ * Marks one milestone reached, or clears it again with `completed: false`. Only
+ * the group's own adviser may write: a milestone is their evaluation of the
+ * group, not the group's claim about itself.
+ */
+app.put(
+  '/api/milestones/:milestone',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    if (req.profile.role !== 'adviser') {
+      throw new HttpError(403, 'Only an adviser can mark a milestone.');
+    }
+
+    const milestone = String(req.params.milestone ?? '');
+    if (!MILESTONE_KEYS.includes(milestone)) {
+      throw new HttpError(400, 'That is not a capstone milestone.');
+    }
+
+    const groupName = String(req.body?.groupName ?? '').trim();
+    if (!groupName) throw new HttpError(400, 'Name the group this milestone belongs to.');
+    await assertAdvisesGroup(req.profile, groupName);
+
+    const completed = req.body?.completed !== false;
+
+    if (!completed) {
+      await pool.query(
+        `delete from public.group_milestones where group_name = $1 and milestone = $2`,
+        [groupName, milestone],
+      );
+      return res.json({ groupName, milestone, completed: false });
+    }
+
+    const consultationId =
+      typeof req.body?.consultationId === 'string' && UUID_RE.test(req.body.consultationId)
+        ? req.body.consultationId
+        : null;
+
+    const { rows } = await pool.query(
+      `insert into public.group_milestones
+              (group_name, milestone, completed_by, consultation_id)
+            values ($1, $2, $3, $4)
+       on conflict (group_name, milestone) do update
+              set completed_at = now(),
+                  completed_by = excluded.completed_by,
+                  consultation_id = coalesce(excluded.consultation_id, public.group_milestones.consultation_id)
+         returning milestone, completed_at, consultation_id`,
+      [groupName, milestone, req.profile.id, consultationId],
+    );
+
+    res.json({ groupName, completed: true, ...rows[0] });
+  }),
+);
+
 /**
  * POST /api/consultations/:id/complete
  * Body: { minutes?, tasks?: [{ description, assignee_id?, due_date? }] }
@@ -1815,6 +2183,11 @@ app.post(
     const minutes = String(req.body?.minutes ?? '').trim().slice(0, 5000) || null;
     const tasks = normalizeTasks(req.body?.tasks);
     const attendance = normalizeAttendance(req.body?.attendance);
+    // Optional: the session that finished a capstone milestone signs it off in
+    // the same breath, because the wrap-up is the only moment anyone knows.
+    const milestone = MILESTONE_KEYS.includes(String(req.body?.milestone ?? ''))
+      ? String(req.body.milestone)
+      : null;
 
     const client = await pool.connect();
     try {
@@ -1857,8 +2230,28 @@ app.post(
         );
       }
 
+      // Part of the same attestation as the minutes, so part of the same
+      // transaction. A group with no name cannot carry group-level progress.
+      if (milestone && consultation.group_name) {
+        await client.query(
+          `insert into public.group_milestones
+                  (group_name, milestone, completed_by, consultation_id)
+                values ($1, $2, $3, $4)
+           on conflict (group_name, milestone) do update
+                  set completed_at = now(),
+                      completed_by = excluded.completed_by,
+                      consultation_id = excluded.consultation_id`,
+          [consultation.group_name, milestone, req.profile.id, consultation.id],
+        );
+      }
+
       await client.query('commit');
-      res.json({ consultation: rows[0], tasks: created, attendance: attendance.length });
+      res.json({
+        consultation: rows[0],
+        tasks: created,
+        attendance: attendance.length,
+        milestone: milestone && consultation.group_name ? milestone : null,
+      });
     } catch (err) {
       await client.query('rollback');
       throw err;

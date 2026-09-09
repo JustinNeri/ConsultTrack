@@ -45,6 +45,7 @@ import RecordView from './RecordView.jsx';
 import ProposeTimeModal from './ProposeTimeModal.jsx';
 import { api } from '../lib/api.js';
 import { toDateInput, upcomingDatesFor } from '../lib/schedule.js';
+import { MILESTONES, MILESTONE_ACTIONS, readMilestones } from '../lib/milestones.js';
 
 /** "2h ago", "3d ago", then a date once it stops being recent. */
 function relativeTime(value) {
@@ -59,19 +60,6 @@ function relativeTime(value) {
   if (days < 7) return `${days}d ago`;
   return shortDateFormatter.format(then);
 }
-
-/**
- * Capstone milestones are a program-level checklist rather than table data, so
- * they live here. Swap COMPLETED_MILESTONES for a real column when you track it.
- */
-const MILESTONES = [
-  'Title Proposal',
-  'Chapters 1-3',
-  'Data Gathering',
-  'System Review',
-  'Final Defense',
-];
-const COMPLETED_MILESTONES = 3;
 
 /**
  * The sidebar only lists views this app can actually render, grouped the way
@@ -178,6 +166,8 @@ export default function Dashboard({ session, onSignOut }) {
   const [directory, setDirectory] = useState([]);
   const [slots, setSlots] = useState([]);
   const [slotsLoading, setSlotsLoading] = useState(false);
+  // The group's real capstone progress, as rows of completed milestones.
+  const [milestoneRows, setMilestoneRows] = useState([]);
   // Bumped to make the history view re-read itself after a wrap-up.
   const [historyKey, setHistoryKey] = useState(0);
   const [view, setView] = useState('overview');
@@ -214,6 +204,7 @@ export default function Dashboard({ session, onSignOut }) {
           hoursResult,
           historyResult,
           advisersResult,
+          milestonesResult,
         ] = await Promise.all([
           api('/consultations/next', { token }),
           api('/tasks/pending', { token }),
@@ -225,6 +216,9 @@ export default function Dashboard({ session, onSignOut }) {
           // Only a student needs the directory: it is where the adviser's
           // faculty position and department come from.
           isAdviser ? Promise.resolve(null) : api('/advisers', { token }).catch(() => null),
+          // A student's own group progress. An adviser has many groups, so
+          // theirs is read per group on the session they are wrapping up.
+          isAdviser ? Promise.resolve(null) : api('/milestones', { token }).catch(() => null),
         ]);
         setConsultation(nextResult.consultation);
         setTasks(tasksResult.tasks ?? []);
@@ -233,6 +227,7 @@ export default function Dashboard({ session, onSignOut }) {
         setHourBlocks(hoursResult ? (hoursResult.availability ?? []).length : null);
         setHistory(historyResult?.consultations ?? []);
         setDirectory(advisersResult?.advisers ?? []);
+        setMilestoneRows(milestonesResult?.milestones ?? []);
         refreshUnread();
       } catch (err) {
         if (err.status === 401) {
@@ -372,8 +367,11 @@ export default function Dashboard({ session, onSignOut }) {
 
   /* Typing in the header search jumps to the list it filters. */
   function handleSearch(value) {
+    // Typing no longer drags you to the action-items page. That made sense when
+    // search only filtered that one list; now the results panel spans every
+    // record, and jumping the page out from under a half-typed word is worse
+    // than useless. Results navigate when you pick one.
     setQuery(value);
-    if (value && view !== 'tasks') setView('tasks');
   }
 
   function goTo(next) {
@@ -565,8 +563,88 @@ export default function Dashboard({ session, onSignOut }) {
     );
   }, [history, isAdviser, requests, unread.threads]);
 
-  const progress = Math.round((COMPLETED_MILESTONES / MILESTONES.length) * 100);
-  const nextMilestone = MILESTONES[COMPLETED_MILESTONES] ?? 'All milestones complete';
+  /**
+   * Everything the search box can actually find.
+   *
+   * The bar says "search anything", so it searches every record this dashboard
+   * already holds rather than only the action items it used to filter. It is
+   * deliberately client-side: these are the same rows the page is rendering, so
+   * there is nothing to fetch and nothing that can go stale between the list and
+   * what a result opens.
+   */
+  const searchResults = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (needle.length < 2) return [];
+
+    const hit = (...parts) => parts.filter(Boolean).join(' ').toLowerCase().includes(needle);
+    const found = [];
+
+    for (const task of tasks) {
+      if (hit(task.task_description, task.consultation_topic, task.assignee_name)) {
+        found.push({
+          id: `task-${task.id}`,
+          group: 'Action items',
+          icon: ListChecks,
+          title: task.task_description,
+          detail: task.consultation_topic,
+          open: () => goTo('tasks'),
+        });
+      }
+    }
+
+    const upcoming = [consultation, ...schedule].filter(Boolean);
+    const seen = new Set();
+    for (const item of upcoming) {
+      if (seen.has(item.id)) continue;
+      seen.add(item.id);
+      if (hit(item.topic, item.group_name, item.location, item.adviser_name)) {
+        found.push({
+          id: `consultation-${item.id}`,
+          group: 'Upcoming',
+          icon: CalendarDays,
+          title: item.topic,
+          detail: [item.group_name, dateFormatter.format(new Date(item.meeting_date))]
+            .filter(Boolean)
+            .join(' \u00b7 '),
+          open: () => setThreadId(item.id),
+        });
+      }
+    }
+
+    for (const request of requests) {
+      if (hit(request.topic, request.group_name, request.requester_name, request.adviser_name)) {
+        found.push({
+          id: `request-${request.id}`,
+          group: 'Requests',
+          icon: Inbox,
+          title: request.topic,
+          detail: [request.group_name, request.status].filter(Boolean).join(' \u00b7 '),
+          open: () => goTo('requests'),
+        });
+      }
+    }
+
+    for (const session of history) {
+      if (hit(session.topic, session.group_name, session.minutes, session.adviser_name)) {
+        found.push({
+          id: `history-${session.id}`,
+          group: 'Past sessions',
+          icon: History,
+          title: session.topic,
+          detail: [session.group_name, shortDateFormatter.format(new Date(session.meeting_date))]
+            .filter(Boolean)
+            .join(' \u00b7 '),
+          open: () => goTo('history'),
+        });
+      }
+    }
+
+    return found.slice(0, 8);
+  }, [consultation, history, query, requests, schedule, tasks]);
+
+  const milestones = useMemo(() => readMilestones(milestoneRows), [milestoneRows]);
+  const progress = milestones.progress;
+  const nextMilestone = milestones.next;
   const firstName = profile.first_name || (profile.full_name || '').split(',').pop()?.trim();
   const displayName = firstName || profile.email || 'there';
 
@@ -594,6 +672,7 @@ export default function Dashboard({ session, onSignOut }) {
             profile={profile}
             query={query}
             onSearch={handleSearch}
+            results={searchResults}
             noticeCount={noticeCount}
             isAdviser={isAdviser}
             refreshing={refreshing}
@@ -666,6 +745,7 @@ export default function Dashboard({ session, onSignOut }) {
                 onSeeAllTasks={() => goTo('tasks')}
                 progress={progress}
                 nextMilestone={nextMilestone}
+                completedMilestones={milestones.completed}
                 hourBlocks={hourBlocks}
                 onSetHours={() => goTo('availability')}
                 unreadByConsultation={unreadByConsultation}
@@ -806,9 +886,12 @@ export default function Dashboard({ session, onSignOut }) {
           role={profile.role}
           defaultGroupName={profile.group_name}
           onClose={() => setBookingOpen(false)}
-          onCreated={(created) => {
+          onCreated={(created, outcome) => {
             setBookingOpen(false);
             setError('');
+            // The booking itself succeeded either way; a failed attachment is a
+            // warning about the file, not about the session.
+            if (outcome?.warning) setError(outcome.warning);
             setNotice(
               created?.status === 'pending'
                 ? 'Request sent. Your adviser has been notified - it becomes official once they approve it.'
@@ -1053,6 +1136,7 @@ function TopBar({
   profile,
   query,
   onSearch,
+  results,
   noticeCount,
   isAdviser,
   refreshing,
@@ -1083,20 +1167,7 @@ function TopBar({
         {title}
       </h1>
 
-      <div className="relative hidden min-w-0 md:block md:w-72 lg:w-[26rem]">
-        <Search
-          className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400"
-          aria-hidden="true"
-        />
-        <input
-          type="search"
-          value={query}
-          onChange={(event) => onSearch(event.target.value)}
-          placeholder="Search anything..."
-          aria-label="Search action items"
-          className="w-full rounded-full border border-ink-200 bg-ink-50 py-2 pl-10 pr-4 text-body text-ink-900 transition placeholder:text-ink-400 hover:border-ink-300 focus:border-brand-600 focus:bg-white focus:outline-none focus:ring-2 focus:ring-brand-700/15"
-        />
-      </div>
+      <GlobalSearch query={query} onSearch={onSearch} results={results} />
 
       <div className="ml-auto flex items-center gap-1">
         <IconButton
@@ -1140,6 +1211,112 @@ function TopBar({
         <AccountMenu profile={profile} onNavigate={onNavigate} onSignOut={onSignOut} />
       </div>
     </header>
+  );
+}
+
+/**
+ * The search box and its results.
+ *
+ * The bar promised "search anything" while only filtering the action-items
+ * list, which meant a search for a group name or a past session found nothing.
+ * Now every match opens the thing it names.
+ */
+function GlobalSearch({ query, onSearch, results }) {
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = (event) => {
+      if (!event.target.closest?.('[data-global-search]')) setOpen(false);
+    };
+    const onKey = (event) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', close);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const searching = query.trim().length >= 2;
+  const showPanel = open && searching;
+
+  // Results arrive flat and pre-ordered; grouping is presentation only.
+  const groups = [];
+  for (const result of results) {
+    const bucket = groups.find((group) => group.label === result.group);
+    if (bucket) bucket.items.push(result);
+    else groups.push({ label: result.group, items: [result] });
+  }
+
+  return (
+    <div className="relative hidden min-w-0 md:block md:w-72 lg:w-[26rem]" data-global-search>
+      <Search
+        className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400"
+        aria-hidden="true"
+      />
+      <input
+        type="search"
+        value={query}
+        onChange={(event) => {
+          onSearch(event.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        placeholder="Search anything..."
+        aria-label="Search consultations, requests, action items and past sessions"
+        aria-expanded={showPanel}
+        className="w-full rounded-full border border-ink-200 bg-ink-50 py-2 pl-10 pr-4 text-body text-ink-900 transition placeholder:text-ink-400 hover:border-ink-300 focus:border-brand-600 focus:bg-white focus:outline-none focus:ring-2 focus:ring-brand-700/15"
+      />
+
+      {showPanel ? (
+        <div className="absolute inset-x-0 top-full z-40 mt-1.5 overflow-hidden rounded-xl border border-ink-200 bg-white shadow-lift">
+          {results.length === 0 ? (
+            <p className="px-4 py-6 text-center text-small text-ink-500">
+              Nothing matches &ldquo;{query.trim()}&rdquo;.
+            </p>
+          ) : (
+            <div className="max-h-[22rem] overflow-y-auto py-1">
+              {groups.map((group) => (
+                <div key={group.label}>
+                  <p className="px-3.5 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wider text-ink-400">
+                    {group.label}
+                  </p>
+                  {group.items.map((result) => (
+                    <button
+                      key={result.id}
+                      type="button"
+                      onClick={() => {
+                        setOpen(false);
+                        result.open();
+                      }}
+                      className="flex w-full items-start gap-2.5 px-3.5 py-2 text-left transition hover:bg-ink-50"
+                    >
+                      <result.icon
+                        className="mt-0.5 h-4 w-4 shrink-0 text-ink-400"
+                        aria-hidden="true"
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-body text-ink-900">
+                          {result.title}
+                        </span>
+                        {result.detail ? (
+                          <span className="block truncate text-small text-ink-500">
+                            {result.detail}
+                          </span>
+                        ) : null}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -1293,6 +1470,7 @@ function OverviewView({
   onSeeAllTasks,
   progress,
   nextMilestone,
+  completedMilestones,
   hourBlocks,
   onSetHours,
   unreadByConsultation,
@@ -1423,7 +1601,9 @@ function OverviewView({
                 action={{ label: 'View details', onClick: onSeeAllHistory }}
               >
                 <p className="tnum text-h1 font-bold tracking-tight text-ink-900">{progress}%</p>
-                <p className="mt-1 text-small text-ink-500">{nextMilestone}</p>
+                <p className="mt-1 text-small text-ink-500">
+                  {nextMilestone ? nextMilestone.label : 'All milestones complete'}
+                </p>
                 <ProgressBar value={progress} className="mt-3" />
               </StatCard>
             )}
@@ -1465,7 +1645,7 @@ function OverviewView({
               onOpenThread={onOpenThread}
             />
           ) : (
-            <MilestonePanel progress={progress} />
+            <MilestonePanel progress={progress} completed={completedMilestones} />
           )}
         </div>
 
@@ -1740,44 +1920,11 @@ function SeeAllLink({ label, onClick }) {
 
 /* ------------------------------------------------------------- next step -- */
 
-/**
- * What the milestone actually asks of a group. The milestone list is a
- * program-level checklist rather than table data, so the steps under it are
- * too -- they are the same for every group at that stage.
- */
-const MILESTONE_ACTIONS = {
-  'Title Proposal': [
-    'Draft the problem statement',
-    'Line up three candidate titles',
-    'Book a consultation to review them',
-  ],
-  'Chapters 1-3': [
-    'Finish the review of related literature',
-    'Settle the research methodology',
-    'Send chapters to your adviser before the session',
-  ],
-  'Data Gathering': [
-    'Finalise the instrument',
-    'Secure the respondents and permissions',
-    'Log the responses as they arrive',
-  ],
-  'System Review': [
-    'Review system requirements',
-    'Prepare demo build',
-    'Schedule consultation',
-  ],
-  'Final Defense': [
-    'Fold in every adviser revision',
-    'Rehearse the defense deck',
-    'Confirm the panel schedule',
-  ],
-};
-
 function NextStepCard({ loading, nextMilestone, tasks, onSeeAllTasks, onBook }) {
   if (loading) return <div className="skeleton h-[17rem] rounded-2xl" />;
 
-  const steps = MILESTONE_ACTIONS[nextMilestone] ?? [];
-  const done = nextMilestone === 'All milestones complete';
+  const steps = nextMilestone ? (MILESTONE_ACTIONS[nextMilestone.key] ?? []) : [];
+  const done = !nextMilestone;
 
   return (
     <article className="animate-rise flex h-full flex-col rounded-2xl border border-ink-200 bg-white p-5">
@@ -1789,7 +1936,7 @@ function NextStepCard({ loading, nextMilestone, tasks, onSeeAllTasks, onBook }) 
       </p>
 
       <h3 className="mt-3 text-h2 font-semibold tracking-tight text-brand-700">
-        {nextMilestone}
+        {nextMilestone ? nextMilestone.label : 'All milestones complete'}
       </h3>
       <p className="mt-1 text-body text-ink-500">
         {done
@@ -2758,7 +2905,7 @@ function RequestsView({
  * with a fill behind it, so the eye lands on "where are we" before it reads
  * anything else.
  */
-function MilestonePanel({ progress }) {
+function MilestonePanel({ progress, completed }) {
   return (
     <section className="animate-rise flex h-full flex-col rounded-2xl border border-ink-200 bg-white p-5">
       <div className="mb-4 flex items-center justify-between gap-3">
@@ -2770,11 +2917,14 @@ function MilestonePanel({ progress }) {
 
       <ol>
         {MILESTONES.map((milestone, index) => {
-          const done = index < COMPLETED_MILESTONES;
-          const current = index === COMPLETED_MILESTONES;
+          const done = completed.has(milestone.key);
+          // The step in progress is the first unfinished one, so a milestone
+          // signed off out of order does not leave two rows highlighted.
+          const current =
+            !done && MILESTONES.slice(0, index).every((earlier) => completed.has(earlier.key));
           const last = index === MILESTONES.length - 1;
           return (
-            <li key={milestone} className="flex gap-3">
+            <li key={milestone.key} className="flex gap-3">
               <div className="flex flex-col items-center">
                 {done ? (
                   <CheckCircle2
@@ -2809,7 +2959,7 @@ function MilestonePanel({ progress }) {
                           : 'text-ink-400'
                     }`}
                   >
-                    {milestone}
+                    {milestone.label}
                   </p>
                   {current ? (
                     <span className="shrink-0 rounded-full bg-brand-100 px-2 py-0.5 text-[10px] font-semibold text-brand-800">

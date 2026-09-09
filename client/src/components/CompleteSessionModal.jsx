@@ -1,15 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
+import { MILESTONES } from '../lib/milestones.js';
 import {
   AlertCircle,
   CalendarDays,
   CheckCircle2,
   ClipboardList,
   FileText,
-  Users,
   Loader2,
+  Milestone,
   Plus,
   Trash2,
   UserRound,
+  Users,
   X,
 } from 'lucide-react';
 import { api } from '../lib/api.js';
@@ -54,6 +56,8 @@ export default function CompleteSessionModal({ token, consultationId, onClose, o
   // an attestation the adviser never made -- "not recorded" and "all present"
   // are different claims, and the record prints them differently.
   const [takeAttendance, setTakeAttendance] = useState(false);
+  // Which capstone milestone, if any, this session signed off.
+  const [milestone, setMilestone] = useState('');
   const [absent, setAbsent] = useState(() => new Set());
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -117,6 +121,9 @@ export default function CompleteSessionModal({ token, consultationId, onClose, o
               assignee_id: task.assignee_id || null,
               due_date: task.due_date || null,
             })),
+          // Only sent when the adviser actually picked one; the wrap-up is
+          // the moment they know, but most sessions do not close a milestone.
+          ...(milestone ? { milestone } : {}),
           // Omitted entirely when the adviser did not take attendance, so the
           // record can say so rather than inventing a full house.
           ...(takeAttendance
@@ -204,6 +211,46 @@ export default function CompleteSessionModal({ token, consultationId, onClose, o
             className={`${inputClass} resize-none`}
           />
           <p className="mt-1 text-right text-xs text-ink-400">{minutes.length}/5000</p>
+
+          {/* -------------------------------------------------- milestone --- */}
+          <div className="mt-5 rounded-xl border border-ink-200 bg-ink-50 p-4">
+            <p className="flex items-center gap-1.5 text-[12px] font-medium text-ink-700">
+              <Milestone className="h-3.5 w-3.5 text-ink-400" aria-hidden="true" />
+              Capstone milestone
+              <span className="font-medium normal-case text-ink-400">(optional)</span>
+            </p>
+            <p className="mt-1 text-xs text-ink-500">
+              Did this session finish one? Marking it here moves the group&apos;s progress
+              tracker.
+            </p>
+
+            <div className="mt-3 flex flex-wrap gap-2">
+              {MILESTONES.map((item) => {
+                const picked = milestone === item.key;
+                return (
+                  <button
+                    key={item.key}
+                    type="button"
+                    aria-pressed={picked}
+                    onClick={() => setMilestone(picked ? '' : item.key)}
+                    className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition ${
+                      picked
+                        ? 'border-brand-700 bg-brand-700 text-white'
+                        : 'border-ink-200 bg-white text-ink-700 hover:border-ink-300 hover:bg-ink-50'
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            {milestone ? (
+              <p className="mt-2.5 text-xs text-ink-500">
+                The group will see this marked complete on their progress tracker.
+              </p>
+            ) : null}
+          </div>
 
           {/* ------------------------------------------------- attendance --- */}
           <div className="mt-5 rounded-xl border border-ink-200 bg-ink-50 p-4">
