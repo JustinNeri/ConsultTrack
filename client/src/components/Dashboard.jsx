@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   ArrowRight,
@@ -7,6 +7,7 @@ import {
   CalendarClock,
   CalendarDays,
   CalendarPlus,
+  Camera,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -1510,7 +1511,7 @@ function AccountMenu({ profile, onNavigate, onSignOut }) {
         aria-expanded={open}
         className="flex items-center gap-2 rounded-full py-1 pl-1 pr-2 transition hover:bg-ink-100"
       >
-        <Avatar name={profile.full_name || profile.email} />
+        <Avatar name={profile.full_name || profile.email} src={profile.avatar_url} />
         <span className="hidden max-w-[9rem] truncate text-body font-medium text-ink-900 sm:block">
           {profile.full_name || profile.email}
         </span>
@@ -1558,7 +1559,29 @@ function AccountMenu({ profile, onNavigate, onSignOut }) {
   );
 }
 
-function Avatar({ name, size = 'md', onBrand = false }) {
+/*
+ * Initials on crimson, or the person's own photograph if they uploaded one.
+ *
+ * Initials remain the default rather than a placeholder to be escaped: most
+ * accounts will never upload anything, and a wall of grey silhouettes is worse
+ * than a wall of initials. `src` is simply allowed to win when it exists.
+ */
+function Avatar({ name, src, size = 'md', onBrand = false }) {
+  const dimensions = size === 'lg' ? 'h-14 w-14 text-base' : 'h-8 w-8 text-[11px]';
+
+  if (src) {
+    return (
+      <img
+        src={src}
+        alt=""
+        aria-hidden="true"
+        className={`${dimensions} shrink-0 rounded-full object-cover ring-1 ${
+          onBrand ? 'ring-white/25' : 'ring-ink-200'
+        }`}
+      />
+    );
+  }
+
   const initials = (name || '?')
     .replace(/[^\p{L}\s,]/gu, '')
     .split(/[\s,]+/)
@@ -1567,7 +1590,6 @@ function Avatar({ name, size = 'md', onBrand = false }) {
     .map((part) => part[0].toUpperCase())
     .join('');
 
-  const dimensions = size === 'lg' ? 'h-14 w-14 text-base' : 'h-8 w-8 text-[11px]';
   // On a crimson surface the crimson fill would disappear.
   const surface = onBrand ? 'bg-white/15 ring-1 ring-white/25' : 'bg-brand-700';
 
@@ -1578,6 +1600,104 @@ function Avatar({ name, size = 'md', onBrand = false }) {
     >
       {initials || '?'}
     </span>
+  );
+}
+
+/* Mirrors allowed_mime_types on the bucket and the API's own check. Refusing
+   here as well is what turns "415 from the server" into an instant answer. */
+const AVATAR_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
+const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
+
+/**
+ * The profile picture, and the two things you can do to it.
+ *
+ * The whole control is the avatar itself with a camera badge on it, because
+ * that is where someone looks when they want to change their picture -- not in
+ * a row of buttons further down the card.
+ */
+function AvatarUploader({ profile, token, onProfileChanged, onError }) {
+  const inputRef = useRef(null);
+  const [busy, setBusy] = useState(false);
+
+  async function send(work) {
+    setBusy(true);
+    onError('');
+    try {
+      const result = await work();
+      onProfileChanged?.(result.profile);
+    } catch (err) {
+      onError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function pick(event) {
+    const file = event.target.files?.[0];
+    // Clearing it means picking the same file twice still fires a change.
+    event.target.value = '';
+    if (!file) return;
+
+    if (!AVATAR_TYPES.includes(file.type)) {
+      onError('Use a PNG, JPEG or WebP image.');
+      return;
+    }
+    if (file.size > MAX_AVATAR_BYTES) {
+      onError('That image is over 2 MB. Try a smaller one.');
+      return;
+    }
+
+    send(() =>
+      api(`/me/avatar?type=${encodeURIComponent(file.type)}`, {
+        method: 'POST',
+        token,
+        raw: file,
+      }),
+    );
+  }
+
+  return (
+    <div className="flex shrink-0 items-center gap-3">
+      <div className="relative">
+        <Avatar
+          name={profile.full_name || profile.email}
+          src={profile.avatar_url}
+          size="lg"
+          onBrand
+        />
+        <button
+          type="button"
+          onClick={() => inputRef.current?.click()}
+          disabled={busy}
+          aria-label={profile.avatar_url ? 'Change profile picture' : 'Add a profile picture'}
+          className="absolute -bottom-1 -right-1 flex h-7 w-7 items-center justify-center rounded-full bg-white text-brand-700 shadow-sm ring-1 ring-brand-950/10 transition hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {busy ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+          ) : (
+            <Camera className="h-3.5 w-3.5" aria-hidden="true" />
+          )}
+        </button>
+        <input
+          ref={inputRef}
+          type="file"
+          accept={AVATAR_TYPES.join(',')}
+          onChange={pick}
+          className="hidden"
+        />
+      </div>
+
+      {profile.avatar_url ? (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => send(() => api('/me/avatar', { method: 'DELETE', token }))}
+          className="text-[12px] font-semibold text-brand-100 underline underline-offset-2 transition hover:text-white disabled:opacity-60"
+        >
+          Remove
+        </button>
+      ) : null}
+    </div>
   );
 }
 
@@ -3296,7 +3416,7 @@ function AdviserPanel({ adviser, consultation, loading, onOpenThread, onBook }) 
       <p className="text-h3 font-semibold text-ink-900">Your adviser</p>
 
       <div className="mt-4 flex items-center gap-3">
-        <Avatar name={name} size="lg" />
+        <Avatar name={name} src={adviser?.avatar_url} size="lg" />
         <div className="min-w-0">
           <p className="truncate text-body font-semibold text-ink-900">{name}</p>
           <p className="truncate text-small text-ink-500">{subtitle}</p>
@@ -3515,6 +3635,8 @@ function ProfileView({ token, refreshToken, profile, onSignOut, onProfileChanged
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [form, setForm] = useState(() => draftFrom(profile));
+  // The picture uploads on its own, so it reports on its own too.
+  const [avatarError, setAvatarError] = useState('');
 
   // A student with no section cannot make a group, so say so where they will
   // be standing when they find out.
@@ -3609,8 +3731,14 @@ function ProfileView({ token, refreshToken, profile, onSignOut, onProfileChanged
       ) : null}
 
       <section className="mt-6 overflow-hidden rounded-xl border border-ink-200 bg-white">
-        <div className="flex flex-wrap items-center gap-4 bg-brand-700 px-6 py-6">
-          <Avatar name={profile.full_name || profile.email} size="lg" onBrand />
+        <div className="bg-brand-700 px-6 py-6">
+          <div className="flex flex-wrap items-center gap-4">
+          <AvatarUploader
+            profile={profile}
+            token={token}
+            onProfileChanged={onProfileChanged}
+            onError={setAvatarError}
+          />
           <div className="min-w-0">
             <p className="truncate text-[17px] font-semibold tracking-tight text-white">
               {profile.full_name || profile.email}
@@ -3640,6 +3768,17 @@ function ProfileView({ token, refreshToken, profile, onSignOut, onProfileChanged
               </span>
             ) : null}
           </div>
+          </div>
+
+          {avatarError ? (
+            <p
+              role="alert"
+              className="mt-3 flex items-start gap-2 rounded-lg bg-brand-950/35 px-3 py-2 text-[13px] font-medium text-white ring-1 ring-white/20"
+            >
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+              {avatarError}
+            </p>
+          ) : null}
         </div>
 
         {editing ? (

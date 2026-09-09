@@ -361,7 +361,8 @@ const PROFILE_COLUMNS = `id, full_name, email, role, group_name, section,
                          last_name, first_name, middle_initial,
                          student_id, department, course, year_level,
                          employee_id, faculty_position,
-                         email_verified_at, registration_completed_at`;
+                         email_verified_at, registration_completed_at,
+                         avatar_url`;
 
 const YEAR_LEVELS = ['1st Year', '2nd Year', '3rd Year', '4th Year', '5th Year'];
 const FACULTY_POSITIONS = [
@@ -815,6 +816,128 @@ app.post(
     await userClient.auth.signOut();
 
     res.json({ ok: true, message: 'Password updated. Sign in with your new password.' });
+  }),
+);
+
+/* --------------------------------------------------------------- avatars -- */
+
+const AVATAR_BUCKET = 'profile-avatars';
+const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
+
+// Mirrors allowed_mime_types on the bucket, so a wrong file is a readable 415
+// rather than a storage error the person cannot act on.
+const AVATAR_TYPES = new Map([
+  ['image/png', '.png'],
+  ['image/jpeg', '.jpg'],
+  ['image/webp', '.webp'],
+]);
+
+/** The public URL of an object in a public bucket. */
+function avatarUrlFor(storagePath) {
+  return `${SUPABASE_URL}/storage/v1/object/public/${AVATAR_BUCKET}/${storagePath}`;
+}
+
+/**
+ * The object name inside the bucket, read back out of a stored URL.
+ *
+ * The profile stores the finished URL because that is what every consumer
+ * wants; this is the one place that needs the other half, to delete the picture
+ * being replaced. Returns null for anything that is not one of our own URLs,
+ * so a hand-edited column cannot steer a delete at another bucket.
+ */
+function avatarPathFrom(url) {
+  const marker = `/storage/v1/object/public/${AVATAR_BUCKET}/`;
+  const at = String(url ?? '').indexOf(marker);
+  if (at === -1) return null;
+  const path = url.slice(at + marker.length).split('?')[0];
+  return path || null;
+}
+
+/** Removes an object, and does not care if it was already gone. */
+async function removeAvatarObject(accessToken, storagePath) {
+  if (!storagePath) return;
+  await storageAs(accessToken)
+    .storage.from(AVATAR_BUCKET)
+    .remove([storagePath])
+    .catch(() => {});
+}
+
+/**
+ * POST /api/me/avatar?type=image/jpeg
+ * Body: the image bytes, as application/octet-stream.
+ *
+ * The object name is `<user id>/<uuid><ext>`. The folder is the user id because
+ * that is what the storage policy checks -- you may only write inside your own
+ * -- and the filename is a uuid rather than theirs so that replacing a picture
+ * changes the URL, which is what stops a browser serving the old one from cache
+ * forever.
+ */
+app.post(
+  '/api/me/avatar',
+  requireAuth,
+  express.raw({ type: 'application/octet-stream', limit: MAX_AVATAR_BYTES }),
+  asyncRoute(async (req, res) => {
+    const bytes = Buffer.isBuffer(req.body) ? req.body : null;
+    if (!bytes?.length) throw new HttpError(400, 'That image was empty.');
+    if (bytes.length > MAX_AVATAR_BYTES) {
+      throw new HttpError(413, 'Profile pictures are limited to 2 MB.');
+    }
+
+    const contentType = String(req.query.type ?? '').trim().toLowerCase();
+    if (!AVATAR_TYPES.has(contentType)) {
+      throw new HttpError(415, 'Use a PNG, JPEG or WebP image.');
+    }
+
+    const previous = avatarPathFrom(req.profile.avatar_url);
+    const storagePath = `${req.profile.id}/${randomUUID()}${AVATAR_TYPES.get(contentType)}`;
+
+    const { error: uploadError } = await storageAs(req.accessToken)
+      .storage.from(AVATAR_BUCKET)
+      .upload(storagePath, bytes, { contentType, upsert: false });
+
+    if (uploadError) {
+      throw new HttpError(502, `Could not store that image: ${uploadError.message}`);
+    }
+
+    let rows;
+    try {
+      ({ rows } = await pool.query(
+        `update public.profiles set avatar_url = $2 where id = $1
+           returning ${PROFILE_COLUMNS}`,
+        [req.profile.id, avatarUrlFor(storagePath)],
+      ));
+    } catch (err) {
+      // The bytes landed but the profile did not point at them, which would
+      // leave an object nothing can reach. Take it back out.
+      await removeAvatarObject(req.accessToken, storagePath);
+      throw err;
+    }
+
+    // Only once the new one is safely referenced. Failing to delete the old
+    // object leaves litter, which is better than deleting it early and leaving
+    // the profile pointing at nothing.
+    await removeAvatarObject(req.accessToken, previous);
+
+    res.json({ profile: rows[0] });
+  }),
+);
+
+/** DELETE /api/me/avatar - back to initials. */
+app.delete(
+  '/api/me/avatar',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const previous = avatarPathFrom(req.profile.avatar_url);
+
+    const { rows } = await pool.query(
+      `update public.profiles set avatar_url = null where id = $1
+         returning ${PROFILE_COLUMNS}`,
+      [req.profile.id],
+    );
+
+    await removeAvatarObject(req.accessToken, previous);
+
+    res.json({ profile: rows[0] });
   }),
 );
 
