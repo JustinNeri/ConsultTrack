@@ -1,6 +1,18 @@
 # ConsultTrack
 
-Academic consultation scheduling for college thesis groups.
+**Live at [consult-track.vercel.app](https://consult-track.vercel.app/)**
+
+ConsultTrack is the consultation system for a university capstone program. A
+thesis group books time with their adviser out of the hours that adviser actually
+published; the adviser approves it, offers a different time, or declines with a
+reason. When the session is over, its minutes, attendance and action items are
+written down while everyone still remembers them.
+
+What comes out the far end is the signed consultation record every capstone
+program asks for at the end of term — assembled from sessions as they happen,
+rather than reconstructed from memory in the last week.
+
+Built for Holy Angel University.
 
 - **Backend** — Node.js, Express, PostgreSQL (Supabase) with parameterized SQL
 - **Frontend** — React (Vite), Tailwind CSS v4, Lucide React
@@ -13,6 +25,8 @@ server/                    Express API
 api/index.js               Vercel serverless entrypoint -> server/app.js
 vercel.json                build config + /api/* rewrite
 client/                    Vite + React app
+  public/                  campus.jpg (sign-in backdrop), favicon.svg
+  src/components/Logo.jsx  the mark, the tile, and the favicon's twin
   src/components/AuthScreen.jsx
   src/components/Dashboard.jsx
   src/components/BookingModal.jsx      booking form + slot picker
@@ -43,6 +57,7 @@ supabase/migrations/
   0012_thesis_groups.sql               sections, real groups with members
   0013_program_level.sql               coordinators, adviser assignment, configurable
                                        milestones, panels, submissions, feedback
+  0014_profile_avatars.sql             profile pictures + public avatar bucket
 ```
 
 ## 1. Database
@@ -85,6 +100,51 @@ To check who registered as what:
 select email, role, employee_id, department, registration_completed_at
   from public.profiles order by role, email;
 ```
+
+### Passwords
+
+A password is set once, during the third step of sign-up, and there are two ways
+to change it afterwards.
+
+**Forgotten** — *Forgot password?* on the sign-in screen mails the same 6-digit
+code the sign-up uses, and the code plus a new password sets it. The reply is
+deliberately identical whether or not the address is registered: a reset form
+that says "no account with that email" is a free membership oracle, and pointing
+it at a list of student numbers would tell you which ones are enrolled here.
+
+Verifying the code produces a real session, which is what gives the server the
+standing to write the password. That session is disposable — it is revoked at
+global scope before the response goes out, so a reset also ends every other
+session the account has. Someone resetting a password may be doing it precisely
+because another person has it.
+
+**Known** — Profile → *Change password* asks for the current one first. Being
+signed in is not on its own enough: a borrowed laptop with a live session would
+otherwise be an account takeover. This one does *not* sign anybody out — the
+person just proved they know the password, and logging them out of their own
+phone would be noise rather than security.
+
+Both live behind their own rate limiters, since both submit a password guess.
+
+### Profile pictures
+
+Optional, uploaded from the profile header, PNG/JPEG/WebP up to 2 MB. Initials on
+crimson remain the default rather than a placeholder to escape — most accounts
+will never upload anything, and a wall of grey silhouettes is worse than a wall
+of initials.
+
+The `profile-avatars` bucket is **public**, unlike `consultation-attachments`
+next to it. An avatar renders dozens of times per page, in adviser panels and
+account menus and rosters; minting and refreshing a signed URL per face per
+render is a great deal of machinery to hide a picture the person chose to show.
+Object names still carry a random uuid, and the storage policy requires the first
+path segment to be your own user id, so you can only ever write into your own
+folder.
+
+`profiles.avatar_url` stores the finished URL rather than the storage path,
+because every route that returns a profile already selects `PROFILE_COLUMNS` and
+a URL column reaches all of them for free. The cost is that the value embeds the
+project's storage origin: if the Supabase URL changes, one `UPDATE` fixes it.
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for the full Gmail SMTP and Vercel walkthroughs.
 
@@ -137,10 +197,16 @@ The OTP flow only sends a **6-digit code** if the email template says so. In
 (not `{{ .ConfirmationURL }}`):
 
 ```html
-<h2>Your ConsultTrack access code</h2>
+<h2>Your ConsultTrack verification code</h2>
 <p style="font-size:28px;letter-spacing:6px"><strong>{{ .Token }}</strong></p>
 <p>This code expires in 10 minutes.</p>
 ```
+
+Word it neutrally. `signInWithOtp` sends the **Magic Link** template for all three
+things that mail a code — signing up, resending, and resetting a forgotten
+password — so a template that says "sign in" is wrong a third of the time. The
+*Reset Password* template is Supabase's own link-based flow, which this app does
+not use.
 
 Also confirm under **Authentication → Sign In / Providers → Email**: email provider
 enabled, and your Gmail SMTP (smtp.gmail.com:587, TLS, app password) saved under
@@ -173,7 +239,13 @@ development and no CORS round trip is needed.
 | --- | --- | --- | --- |
 | POST | `/api/auth/send-code` | — | Email a 6-digit code (`signInWithOtp`) |
 | POST | `/api/auth/verify-code` | — | Verify the code (`verifyOtp`), return session |
+| POST | `/api/auth/login` | — | Email + password, return session |
+| POST | `/api/auth/forgot-password` | — | Mail a reset code (same reply either way) |
+| POST | `/api/auth/reset-password` | — | Code + new password; revokes every session |
+| POST | `/api/auth/change-password` | Bearer | Current password + new one, stays signed in |
 | GET | `/api/me` | Bearer | Current profile |
+| POST | `/api/me/avatar` | Bearer | Upload a profile picture (2 MB, PNG/JPEG/WebP) |
+| DELETE | `/api/me/avatar` | Bearer | Remove it, back to initials |
 | GET | `/api/consultations/next` | Bearer | Soonest **approved** consultation |
 | GET | `/api/consultations/requests` | Bearer | Requests awaiting a decision |
 | GET | `/api/tasks/pending` | Bearer | Open action items |
@@ -413,11 +485,6 @@ primary key is the (consultation, person) pair.
   This matters more now that there are threads — a message sits unseen until the
   other side next opens the app. Add a mailer if it needs to reach someone who is
   not looking at the dashboard.
-- **Attachments** in the booking modal are UI only. Files are listed but not
-  uploaded; wire them to a Supabase Storage bucket when you need them.
-- **Capstone milestones** (`MILESTONES` / `COMPLETED_MILESTONES` in `Dashboard.jsx`)
-  are hard-coded, since no table tracks them. The 60% / "System Review" figures come
-  from there.
 - **Adviser assignment** — a student picks their adviser per booking, from the
   directory at `GET /api/advisers`, which lists only the advisers in the student's
   own department (`POST /api/consultations` enforces the same rule, so the filter
