@@ -40,6 +40,7 @@ import {
   Users,
   X,
 } from 'lucide-react';
+import Logo from './Logo.jsx';
 import BookingModal from './BookingModal.jsx';
 import AvailabilityView from './AvailabilityView.jsx';
 import ConsultationThread from './ConsultationThread.jsx';
@@ -995,9 +996,7 @@ function Sidebar({
       >
         <div className="flex items-center justify-between px-2">
           <div className="flex items-center gap-2.5">
-            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-brand-700">
-              <GraduationCap className="h-5 w-5 text-white" aria-hidden="true" />
-            </span>
+            <Logo className="h-9 w-9 shrink-0" />
             <span className="leading-tight">
               <span className="block text-h3 font-semibold tracking-tight text-white">
                 ConsultTrack

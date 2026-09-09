@@ -1,0 +1,18 @@
+<!-- Same geometry as src/components/Logo.jsx. Change one, change the other. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a82f4e"/>
+      <stop offset="1" stop-color="#671a2c"/>
+    </linearGradient>
+    <mask id="knock">
+      <rect width="48" height="48" fill="black"/>
+      <g transform="translate(10.2 11) scale(1.15)">
+        <path d="M7 3H17A4.5 4.5 0 0 1 21.5 7.5V13.5A4.5 4.5 0 0 1 17 18H11.6L8.1 21.35A0.9 0.9 0 0 1 6.6 20.7V17.9A4.5 4.5 0 0 1 2.5 13.5V7.5A4.5 4.5 0 0 1 7 3Z" fill="white"/>
+        <path d="M8.2 10.6 10.9 13.3 15.9 8.3" fill="none" stroke="black" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
+    </mask>
+  </defs>
+  <rect width="48" height="48" rx="13" fill="url(#tile)"/>
+  <rect width="48" height="48" fill="white" mask="url(#knock)"/>
+</svg>

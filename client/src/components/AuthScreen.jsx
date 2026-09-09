@@ -22,6 +22,7 @@ import {
   User,
   Users,
 } from 'lucide-react';
+import Logo from './Logo.jsx';
 import { api } from '../lib/api.js';
 import {
   DEPARTMENTS,
@@ -309,9 +310,7 @@ export default function AuthScreen({ onAuthenticated }) {
       <AuthShell>
         <div className="animate-rise w-full max-w-[420px] [text-shadow:0_1px_14px_rgba(20,4,10,0.55)]">
           <div className="flex items-center gap-2.5">
-            <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-brand-700 ring-1 ring-white/20">
-              <GraduationCap className="h-5 w-5 text-white" aria-hidden="true" />
-            </span>
+            <Logo className="h-10 w-10 shrink-0 drop-shadow-[0_2px_10px_rgba(20,4,10,0.45)]" />
             <span className="leading-tight">
               <span className="block text-[17px] font-semibold tracking-tight text-white">
                 ConsultTrack
@@ -865,9 +864,7 @@ function BrandPanel({ view }) {
   return (
     <div className="relative hidden bg-gradient-to-b from-brand-900 to-brand-950 p-10 lg:flex lg:flex-col">
       <div className="flex items-center gap-2.5">
-        <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-700">
-          <GraduationCap className="h-5 w-5 text-white" aria-hidden="true" />
-        </span>
+        <Logo className="h-9 w-9 shrink-0" />
         <span className="leading-tight">
           <span className="block text-[15px] font-semibold tracking-tight text-white">
             ConsultTrack
@@ -924,9 +921,7 @@ function BrandPanel({ view }) {
 function MobileBrandBar() {
   return (
     <div className="mb-8 flex items-center gap-2.5 lg:hidden">
-      <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-700">
-        <GraduationCap className="h-5 w-5 text-white" aria-hidden="true" />
-      </span>
+      <Logo className="h-9 w-9 shrink-0" />
       <span className="leading-tight">
         <span className="block text-[15px] font-semibold tracking-tight text-ink-900">
           ConsultTrack
