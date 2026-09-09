@@ -307,7 +307,7 @@ export default function AuthScreen({ onAuthenticated }) {
   if (view === 'login') {
     return (
       <AuthShell>
-        <div className="animate-rise w-full max-w-[420px]">
+        <div className="animate-rise w-full max-w-[420px] [text-shadow:0_1px_14px_rgba(20,4,10,0.55)]">
           <div className="flex items-center gap-2.5">
             <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-brand-700 ring-1 ring-white/20">
               <GraduationCap className="h-5 w-5 text-white" aria-hidden="true" />
@@ -320,10 +320,10 @@ export default function AuthScreen({ onAuthenticated }) {
             </span>
           </div>
 
-          <h1 className="mt-9 text-[38px] font-bold leading-[1.05] tracking-[-0.03em] text-white sm:text-[42px]">
+          <h1 className="mt-9 text-[38px] font-bold leading-[1.05] tracking-[-0.03em] text-white drop-shadow-[0_2px_18px_rgba(20,4,10,0.5)] sm:text-[42px]">
             Welcome back
           </h1>
-          <p className="mt-2.5 text-[14px] text-brand-100/75">
+          <p className="mt-2.5 text-[14px] text-brand-100/85">
             Sign in to book and track your consultations.
           </p>
 
@@ -361,7 +361,7 @@ export default function AuthScreen({ onAuthenticated }) {
             <SubmitButton busy={busy} label="Sign in" busyLabel="Signing in..." />
           </form>
 
-          <p className="mt-6 text-center text-[13px] text-brand-100/80">
+          <p className="mt-6 text-center text-[13px] text-brand-100/90">
             First time here?{' '}
             <button
               type="button"
@@ -789,7 +789,7 @@ export default function AuthScreen({ onAuthenticated }) {
         </div>
 
         {view === 'email' || view === 'verify' ? (
-          <p className="mt-5 text-center text-xs text-brand-100/70">
+          <p className="mt-5 text-center text-xs text-brand-100/80 [text-shadow:0_1px_10px_rgba(20,4,10,0.6)]">
             Check your spam folder if the code does not arrive within a minute.
           </p>
         ) : null}
@@ -801,10 +801,12 @@ export default function AuthScreen({ onAuthenticated }) {
 /* ------------------------------------------------------------- auth shell -- */
 
 /*
- * Both auth screens stand on the same ground: the campus photograph, desaturated
- * and pushed under a maroon wash that is near-opaque at the top -- so white type
- * lands on flat colour, not on whatever the photo happens to be doing -- and
- * thins toward the bottom, where the building is allowed to show through.
+ * Both auth screens stand on the same ground: the campus photograph under a
+ * maroon wash. The wash is deliberately uneven -- a light flat tint everywhere
+ * so the whole frame reads maroon, then the real darkening pooled behind the
+ * column of type and falling off toward the edges. Spreading the same density
+ * over the entire frame is what buries the photograph; concentrating it buys
+ * the contrast the white type needs and leaves the campus visible around it.
  */
 function AuthShell({ children }) {
   return (
@@ -813,17 +815,20 @@ function AuthShell({ children }) {
         {/* What shows if the photograph is missing: flat maroon, still on-brand. */}
         <div className="absolute inset-0 bg-brand-950" />
         <div
-          className="absolute inset-0 bg-cover bg-center saturate-[0.55]"
+          className="absolute inset-0 bg-cover bg-center saturate-[0.85]"
           style={{ backgroundImage: `url('${AUTH_BACKDROP}')` }}
         />
-        {/* Flat tint first, so the photo is maroon everywhere, then the falloff. */}
-        <div className="absolute inset-0 bg-brand-950/55" />
-        <div className="absolute inset-0 bg-gradient-to-b from-brand-950 via-brand-950/90 to-brand-900/25" />
+        {/* One light pass so no corner of the photo escapes the brand colour. */}
+        <div className="absolute inset-0 bg-brand-950/25" />
+        {/* The scrim that actually earns the contrast, centred on the type. */}
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_65%_60%_at_50%_44%,rgba(42,9,18,0.74),rgba(42,9,18,0.12)_78%)]" />
+        {/* Top and bottom falloff, so the frame is anchored rather than floating. */}
+        <div className="absolute inset-0 bg-gradient-to-b from-brand-950/70 via-transparent to-brand-950/35" />
       </div>
 
       <div className="relative flex w-full flex-col items-center">{children}</div>
 
-      <p className="relative mt-10 text-center text-[11px] text-white/40">
+      <p className="relative mt-10 text-center text-[11px] text-white/55 [text-shadow:0_1px_10px_rgba(20,4,10,0.6)]">
         Holy Angel University &middot; ConsultTrack
       </p>
     </div>
