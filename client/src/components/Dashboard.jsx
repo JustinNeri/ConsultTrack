@@ -22,6 +22,7 @@ import {
   Users2,
   ListChecks,
   Lightbulb,
+  Pencil,
   Loader2,
   LogOut,
   Mail,
@@ -48,6 +49,7 @@ import GroupView from './GroupView.jsx';
 import { api } from '../lib/api.js';
 import { toDateInput, upcomingDatesFor } from '../lib/schedule.js';
 import { MILESTONES, MILESTONE_ACTIONS, readMilestones } from '../lib/milestones.js';
+import { DEPARTMENTS, FACULTY_POSITIONS, YEAR_LEVELS } from '../lib/hau.js';
 
 /** "2h ago", "3d ago", then a date once it stops being recent. */
 function relativeTime(value) {
@@ -141,7 +143,7 @@ const detailDateFormatter = new Intl.DateTimeFormat(undefined, {
   year: 'numeric',
 });
 
-export default function Dashboard({ session, onSignOut }) {
+export default function Dashboard({ session, onSignOut, onProfileChanged }) {
   const [consultation, setConsultation] = useState(null);
   const [schedule, setSchedule] = useState([]);
   const [tasks, setTasks] = useState([]);
@@ -242,6 +244,11 @@ export default function Dashboard({ session, onSignOut }) {
         setDirectory(advisersResult?.advisers ?? []);
         setMilestoneRows(milestonesResult?.milestones ?? []);
         setGroup(groupResult?.group ?? null);
+        // The signed-in profile carries group_name and section, both of which
+        // move when a group does. Cheap to re-read, and wrong if we do not.
+        api('/me', { token })
+          .then((result) => onProfileChanged?.(result.profile))
+          .catch(() => {});
         refreshUnread();
       } catch (err) {
         if (err.status === 401) {
@@ -387,6 +394,10 @@ export default function Dashboard({ session, onSignOut }) {
    * are sent to set one up rather than to a form the API would refuse.
    */
   function startBooking() {
+    // `group` is null until the first load answers, so without the loading
+    // guard an early click sent a student who does have a group to the group
+    // screen anyway.
+    if (loading) return;
     if (!isAdviser && !group) {
       setView('group');
       return;
@@ -842,7 +853,7 @@ export default function Dashboard({ session, onSignOut }) {
             ) : null}
 
             {view === 'record' ? (
-              <RecordView token={token} isAdviser={isAdviser} profile={profile} />
+              <RecordView token={token} isAdviser={isAdviser} />
             ) : null}
 
             {view === 'group' && !isAdviser ? (
@@ -854,7 +865,14 @@ export default function Dashboard({ session, onSignOut }) {
               />
             ) : null}
 
-            {view === 'profile' ? <ProfileView profile={profile} onSignOut={onSignOut} /> : null}
+            {view === 'profile' ? (
+              <ProfileView
+                token={token}
+                profile={profile}
+                onSignOut={onSignOut}
+                onProfileChanged={onProfileChanged}
+              />
+            ) : null}
           </main>
 
           <MobileTabBar
@@ -3369,7 +3387,50 @@ function TaskCard({ task, busy, onResolve }) {
 
 /* ---------------------------------------------------------- profile view -- */
 
-function ProfileView({ profile, onSignOut }) {
+/**
+ * The profile, and the parts of it a person may correct themselves.
+ *
+ * Editing exists because sections arrived after 43 accounts already did, and
+ * without a section you cannot create a thesis group -- so every one of those
+ * accounts was locked out of the feature with no way back in.
+ *
+ * Email, role, student and faculty ID and department stay read-only: they are
+ * the registrar's or are derived from the address the login code went to.
+ */
+function ProfileView({ token, profile, onSignOut, onProfileChanged }) {
+  const isAdviser = profile.role === 'adviser';
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [form, setForm] = useState(() => draftFrom(profile));
+
+  // A student with no section cannot make a group, so say so where they will
+  // be standing when they find out.
+  const missingSection = !isAdviser && !profile.section;
+
+  function update(field, value) {
+    setForm((prev) => ({ ...prev, [field]: value }));
+  }
+
+  async function save(event) {
+    event.preventDefault();
+    if (saving) return;
+    setSaving(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await api('/me', { method: 'PATCH', token, body: form });
+      onProfileChanged?.(result.profile);
+      setNotice('Profile updated.');
+      setEditing(false);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const rows = [
     ['Full name', profile.full_name],
     ['Email', profile.email],
@@ -3386,10 +3447,57 @@ function ProfileView({ profile, onSignOut }) {
 
   return (
     <div className="animate-rise max-w-3xl">
-      <h1 className="text-2xl font-bold tracking-tight text-ink-900">My profile</h1>
-      <p className="mt-1 text-sm text-ink-500">The details you registered with.</p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-h1 font-bold tracking-tight text-ink-900">My profile</h1>
+          <p className="mt-1 text-body text-ink-500">The details you registered with.</p>
+        </div>
+        {!editing ? (
+          <button
+            type="button"
+            onClick={() => {
+              setForm(draftFrom(profile));
+              setNotice('');
+              setEditing(true);
+            }}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-ink-200 bg-white px-3.5 py-2 text-body font-semibold text-ink-700 transition hover:border-ink-300 hover:bg-ink-50"
+          >
+            <Pencil className="h-4 w-4" aria-hidden="true" />
+            Edit profile
+          </button>
+        ) : null}
+      </div>
 
-      <section className="mt-6 overflow-hidden rounded-xl bg-white border border-ink-200">
+      {missingSection && !editing ? (
+        <p className="mt-5 flex items-start gap-2 rounded-xl border border-gold-200 bg-gold-50/60 px-3.5 py-3 text-body text-gold-800">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          <span>
+            Your account has no section. Add one to create or join a thesis group.
+          </span>
+        </p>
+      ) : null}
+
+      {error ? (
+        <p
+          role="alert"
+          className="mt-5 flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-3 text-body font-medium text-rose-700"
+        >
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          {error}
+        </p>
+      ) : null}
+
+      {notice ? (
+        <p
+          role="status"
+          className="mt-5 flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-3 text-body font-medium text-emerald-800"
+        >
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          {notice}
+        </p>
+      ) : null}
+
+      <section className="mt-6 overflow-hidden rounded-xl border border-ink-200 bg-white">
         <div className="flex flex-wrap items-center gap-4 bg-brand-700 px-6 py-6">
           <Avatar name={profile.full_name || profile.email} size="lg" onBrand />
           <div className="min-w-0">
@@ -3397,7 +3505,7 @@ function ProfileView({ profile, onSignOut }) {
               {profile.full_name || profile.email}
             </p>
             <p className="truncate text-[13px] text-brand-100">
-              {(profile.role === 'adviser'
+              {(isAdviser
                 ? [profile.faculty_position || 'Adviser', profile.department]
                 : [profile.year_level, profile.course]
               )
@@ -3407,12 +3515,12 @@ function ProfileView({ profile, onSignOut }) {
           </div>
           <div className="ml-auto flex flex-wrap items-center gap-2">
             <span className="flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/25">
-              {profile.role === 'adviser' ? (
+              {isAdviser ? (
                 <Briefcase className="h-3.5 w-3.5" aria-hidden="true" />
               ) : (
                 <GraduationCap className="h-3.5 w-3.5" aria-hidden="true" />
               )}
-              {profile.role === 'adviser' ? 'Adviser' : 'Student'}
+              {isAdviser ? 'Adviser' : 'Student'}
             </span>
             {profile.email_verified_at ? (
               <span className="flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/25">
@@ -3423,20 +3531,152 @@ function ProfileView({ profile, onSignOut }) {
           </div>
         </div>
 
-        <dl className="divide-y divide-ink-200">
-          {rows.map(([label, value, capitalized]) => (
-            <div key={label} className="flex flex-wrap gap-2 px-6 py-4">
-              <dt className="w-40 text-[13px] text-ink-500">{label}</dt>
-              <dd
-                className={`flex-1 break-all text-[13px] font-medium text-ink-900 ${
-                  capitalized ? 'capitalize' : ''
-                }`}
-              >
-                {value}
-              </dd>
+        {editing ? (
+          <form onSubmit={save} className="p-6">
+            <div className="grid gap-4 sm:grid-cols-[2fr_2fr_1fr]">
+              <ProfileField label="Last name" id="edit-last">
+                <input
+                  id="edit-last"
+                  required
+                  value={form.lastName}
+                  onChange={(event) => update('lastName', event.target.value)}
+                  className={EDIT_INPUT}
+                />
+              </ProfileField>
+              <ProfileField label="First name" id="edit-first">
+                <input
+                  id="edit-first"
+                  required
+                  value={form.firstName}
+                  onChange={(event) => update('firstName', event.target.value)}
+                  className={EDIT_INPUT}
+                />
+              </ProfileField>
+              <ProfileField label="M.I." id="edit-mi">
+                <input
+                  id="edit-mi"
+                  maxLength={1}
+                  value={form.middleInitial}
+                  onChange={(event) => update('middleInitial', event.target.value)}
+                  className={`${EDIT_INPUT} text-center uppercase`}
+                />
+              </ProfileField>
             </div>
-          ))}
-        </dl>
+
+            {isAdviser ? (
+              <div className="mt-4">
+                <ProfileField label="Academic position" id="edit-position">
+                  <select
+                    id="edit-position"
+                    value={form.facultyPosition}
+                    onChange={(event) => update('facultyPosition', event.target.value)}
+                    className={EDIT_INPUT}
+                  >
+                    <option value="">Not set</option>
+                    {FACULTY_POSITIONS.map((position) => (
+                      <option key={position} value={position}>
+                        {position}
+                      </option>
+                    ))}
+                  </select>
+                </ProfileField>
+              </div>
+            ) : (
+              <div className="mt-4 grid gap-4 sm:grid-cols-3">
+                <ProfileField label="Section" id="edit-section">
+                  <input
+                    id="edit-section"
+                    required
+                    maxLength={20}
+                    value={form.section}
+                    onChange={(event) => update('section', event.target.value.toUpperCase())}
+                    placeholder="CS-401"
+                    className={`${EDIT_INPUT} uppercase`}
+                  />
+                </ProfileField>
+                <ProfileField label="Course" id="edit-course">
+                  <select
+                    id="edit-course"
+                    required
+                    value={form.course}
+                    onChange={(event) => update('course', event.target.value)}
+                    className={EDIT_INPUT}
+                  >
+                    <option value="">Select course</option>
+                    {(DEPARTMENTS[profile.department] ?? []).map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                    {/* Keeps a course from another department selectable rather
+                        than silently clearing it. */}
+                    {form.course && !(DEPARTMENTS[profile.department] ?? []).includes(form.course) ? (
+                      <option value={form.course}>{form.course}</option>
+                    ) : null}
+                  </select>
+                </ProfileField>
+                <ProfileField label="Year level" id="edit-year">
+                  <select
+                    id="edit-year"
+                    required
+                    value={form.yearLevel}
+                    onChange={(event) => update('yearLevel', event.target.value)}
+                    className={EDIT_INPUT}
+                  >
+                    <option value="">Select year level</option>
+                    {YEAR_LEVELS.map((year) => (
+                      <option key={year} value={year}>
+                        {year}
+                      </option>
+                    ))}
+                  </select>
+                </ProfileField>
+              </div>
+            )}
+
+            <p className="mt-4 text-small text-ink-500">
+              Your email, role, department and
+              {isAdviser ? ' faculty ID ' : ' student ID '}
+              cannot be changed here. Ask the registrar if one of them is wrong.
+            </p>
+
+            <div className="mt-5 flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setEditing(false);
+                  setError('');
+                }}
+                className="rounded-lg border border-ink-200 px-4 py-2 text-body font-semibold text-ink-700 transition hover:bg-ink-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={saving}
+                className="inline-flex items-center gap-2 rounded-lg bg-brand-700 px-4 py-2 text-body font-semibold text-white transition hover:bg-brand-600 disabled:opacity-60"
+              >
+                {saving ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
+                Save changes
+              </button>
+            </div>
+          </form>
+        ) : (
+          <dl className="divide-y divide-ink-200">
+            {rows.map(([label, value, capitalized]) => (
+              <div key={label} className="flex flex-wrap gap-2 px-6 py-4">
+                <dt className="w-40 text-[13px] text-ink-500">{label}</dt>
+                <dd
+                  className={`flex-1 break-all text-[13px] font-medium text-ink-900 ${
+                    capitalized ? 'capitalize' : ''
+                  }`}
+                >
+                  {value}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        )}
       </section>
 
       <button
@@ -3451,3 +3691,30 @@ function ProfileView({ profile, onSignOut }) {
     </div>
   );
 }
+
+/** Only the fields PATCH /api/me accepts, so the form cannot send anything else. */
+function draftFrom(profile) {
+  return {
+    lastName: profile.last_name ?? '',
+    firstName: profile.first_name ?? '',
+    middleInitial: profile.middle_initial ?? '',
+    section: profile.section ?? '',
+    course: profile.course ?? '',
+    yearLevel: profile.year_level ?? '',
+    facultyPosition: profile.faculty_position ?? '',
+  };
+}
+
+function ProfileField({ label, id, children }) {
+  return (
+    <div>
+      <label htmlFor={id} className="mb-1.5 block text-[12px] font-medium text-ink-700">
+        {label}
+      </label>
+      {children}
+    </div>
+  );
+}
+
+const EDIT_INPUT =
+  'w-full rounded-lg border border-ink-200 bg-white px-3.5 py-2.5 text-[14px] text-ink-900 transition placeholder:text-ink-400 hover:border-ink-300 focus:border-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-700/15';

@@ -80,8 +80,9 @@ export default function BookingModal({ token, role, group, defaultGroupName, onC
   const [slotsVersion, setSlotsVersion] = useState(0);
 
   const [files, setFiles] = useState([]);
-  // For an adviser: the groups they already hold consultations with. They can
-  // still type a name for a group that has not registered itself yet.
+  // For an adviser: the groups in their department, plus any they already
+  // advise. Not just the latter -- a group's first session is by definition
+  // with an adviser who has never advised it.
   const [advisedGroups, setAdvisedGroups] = useState([]);
   // Which file is going up, so the button can say so instead of hanging.
   const [uploading, setUploading] = useState(null);
@@ -195,7 +196,7 @@ export default function BookingModal({ token, role, group, defaultGroupName, onC
   useEffect(() => {
     if (!isAdviser) return undefined;
     const controller = new AbortController();
-    api('/thesis-groups/advised', { token, signal: controller.signal })
+    api('/thesis-groups/bookable', { token, signal: controller.signal })
       .then((result) => setAdvisedGroups(result.groups ?? []))
       // Booking still works by typing a name, so this stays quiet.
       .catch(() => {});

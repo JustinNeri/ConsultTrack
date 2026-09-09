@@ -74,10 +74,62 @@ pool.on('error', (err) => console.error('[pg] idle client error:', err.message))
 
 const app = express();
 app.disable('x-powered-by');
+// Vercel and any other reverse proxy put the caller's address in
+// X-Forwarded-For. Without this, req.ip is the proxy and the rate limiter
+// treats every visitor as one client.
+app.set('trust proxy', 1);
 app.use(express.json({ limit: '100kb' }));
 app.use(cors({ origin: CLIENT_ORIGIN.split(',').map((o) => o.trim()), credentials: true }));
 
 const asyncRoute = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
+/**
+ * A small fixed-window limiter, in memory.
+ *
+ * It exists to stop this server being turned into a mailer aimed at real HAU
+ * staff: the code routes send an email to any address you name, and Supabase's
+ * own throttle is per-address, so a script walking a list of addresses never
+ * trips it.
+ *
+ * In memory is the right scope for what this defends. A serverless deployment
+ * gives each container its own map, which weakens it but does not break it --
+ * the alternative is a shared store this app does not otherwise need. Move it
+ * to Postgres or Redis if you ever run this behind a real load balancer.
+ */
+const rateBuckets = new Map();
+
+function rateLimit({ windowMs, max, key }) {
+  return (req, _res, next) => {
+    const bucket = `${key}:${req.ip ?? 'unknown'}`;
+    const now = Date.now();
+    const seen = rateBuckets.get(bucket);
+
+    if (!seen || now > seen.resetAt) {
+      rateBuckets.set(bucket, { count: 1, resetAt: now + windowMs });
+      // Opportunistic sweep, so the map cannot grow without bound.
+      if (rateBuckets.size > 5000) {
+        for (const [name, entry] of rateBuckets) {
+          if (now > entry.resetAt) rateBuckets.delete(name);
+        }
+      }
+      return next();
+    }
+
+    if (seen.count >= max) {
+      const seconds = Math.ceil((seen.resetAt - now) / 1000);
+      return next(new HttpError(429, `Too many attempts. Try again in ${seconds}s.`));
+    }
+
+    seen.count += 1;
+    return next();
+  };
+}
+
+// Sending a code puts mail in somebody's inbox, so it is the tightest.
+const limitCodeSend = rateLimit({ windowMs: 10 * 60_000, max: 8, key: 'code-send' });
+// Guessing a code or a password is cheap for the attacker and costly for us.
+const limitCodeVerify = rateLimit({ windowMs: 10 * 60_000, max: 20, key: 'code-verify' });
+const limitLogin = rateLimit({ windowMs: 10 * 60_000, max: 20, key: 'login' });
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -167,23 +219,27 @@ const JOIN_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 /**
  * The predicate deciding whether a student may see a consultation row.
  *
- * Three ways in, in order of how firmly they hold:
- *   they booked it themselves;
- *   it belongs to the thesis group they are a member of;
- *   it predates groups entirely, and still matches the old group_name string.
+ * Two ways in, and which applies depends on the row:
  *
- * That third case is why `group_id is null` guards it. Once a consultation has
- * a real group, membership is the only thing that grants access -- otherwise a
- * student who typed the same words into their profile would inherit another
- * group's sessions, which is exactly the bug groups exist to end.
+ *   a consultation with a real group is reachable only by its members. Not by
+ *   whoever booked it -- a student who leaves a group should stop seeing its
+ *   sessions, including the ones they booked themselves;
+ *
+ *   a consultation from before groups existed has no membership to check, so it
+ *   falls back to the person who booked it or to the old group_name string.
  *
  * Takes placeholders rather than values, so each caller keeps its own numbering.
  */
 function groupVisibility({ creator, groupId, groupName }) {
   return `(
-              c.created_by = ${creator}
-           or (${groupId}::uuid is not null and c.group_id = ${groupId})
-           or (c.group_id is null and c.group_name is not null and c.group_name = ${groupName})
+              (c.group_id is not null
+                and ${groupId}::uuid is not null
+                and c.group_id = ${groupId})
+           or (c.group_id is null
+                and (
+                     c.created_by = ${creator}
+                  or (c.group_name is not null and c.group_name = ${groupName})
+                ))
          )`;
 }
 
@@ -338,6 +394,7 @@ function isComplete(profile) {
  */
 app.post(
   '/api/auth/start',
+  limitCodeSend,
   asyncRoute(async (req, res) => {
     const email = requireHauEmail(req.body?.email);
     assertMayReceiveCode(email);
@@ -368,6 +425,7 @@ app.post(
  */
 app.post(
   '/api/auth/send-code',
+  limitCodeSend,
   asyncRoute(async (req, res) => {
     const email = requireHauEmail(req.body?.email);
     assertMayReceiveCode(email);
@@ -396,6 +454,7 @@ app.post(
  */
 app.post(
   '/api/auth/verify-code',
+  limitCodeVerify,
   asyncRoute(async (req, res) => {
     const email = requireHauEmail(req.body?.email);
     const code = String(req.body?.code ?? '').trim();
@@ -579,6 +638,7 @@ app.post(
  */
 app.post(
   '/api/auth/login',
+  limitLogin,
   asyncRoute(async (req, res) => {
     const email = String(req.body?.email ?? '').trim().toLowerCase();
     const password = String(req.body?.password ?? '');
@@ -615,6 +675,114 @@ app.get(
   '/api/me',
   requireAuth,
   asyncRoute(async (req, res) => res.json({ profile: req.profile })),
+);
+
+/**
+ * PATCH /api/me
+ * Body: any of { lastName, firstName, middleInitial, section, course, yearLevel,
+ *                facultyPosition }
+ *
+ * Everything on a profile that a person can legitimately correct themselves.
+ *
+ * Deliberately not editable here: email (it is the identity the login code was
+ * sent to), role (it is derived from the email domain), student and faculty ID
+ * (they are the registrar's, and letting someone retype one would let them
+ * claim another person's number), and department (it scopes which advisers and
+ * groups you can reach).
+ *
+ * Only fields actually present in the body are touched, so a form that sends
+ * one field cannot blank the rest.
+ */
+app.patch(
+  '/api/me',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const isAdviser = req.profile.role === 'adviser';
+    const updates = {};
+
+    const text = (key, max = 120) =>
+      typeof req.body?.[key] === 'string' ? req.body[key].trim().slice(0, max) : undefined;
+
+    const lastName = text('lastName');
+    const firstName = text('firstName');
+    const middleInitial = text('middleInitial', 1);
+
+    if (lastName !== undefined) {
+      if (!lastName) throw new HttpError(400, 'Last name cannot be empty.');
+      updates.last_name = lastName;
+    }
+    if (firstName !== undefined) {
+      if (!firstName) throw new HttpError(400, 'First name cannot be empty.');
+      updates.first_name = firstName;
+    }
+    if (middleInitial !== undefined) updates.middle_initial = middleInitial || null;
+
+    if (!isAdviser) {
+      const section = text('section', 20);
+      if (section !== undefined) {
+        if (!section) throw new HttpError(400, 'Section cannot be empty.');
+        const upper = section.toUpperCase();
+        if (!SECTION_RE.test(upper)) {
+          throw new HttpError(400, 'Enter a valid section, e.g. CS-401.');
+        }
+        updates.section = upper;
+      }
+
+      // Registration does not validate the course against a list either -- the
+      // course/department pairing lives in the client's hau.js -- so this
+      // accepts what the form sends rather than inventing a stricter rule.
+      const course = text('course');
+      if (course !== undefined) {
+        if (!course) throw new HttpError(400, 'Course cannot be empty.');
+        updates.course = course;
+      }
+
+      const yearLevel = text('yearLevel', 40);
+      if (yearLevel !== undefined) {
+        if (yearLevel && !YEAR_LEVELS.includes(yearLevel)) {
+          throw new HttpError(400, 'Select a valid year level.');
+        }
+        updates.year_level = yearLevel || null;
+      }
+    } else {
+      const facultyPosition = text('facultyPosition', 60);
+      if (facultyPosition !== undefined) {
+        if (facultyPosition && !FACULTY_POSITIONS.includes(facultyPosition)) {
+          throw new HttpError(400, 'Select a valid academic position.');
+        }
+        updates.faculty_position = facultyPosition || null;
+      }
+    }
+
+    if (!Object.keys(updates).length) {
+      throw new HttpError(400, 'Nothing to update.');
+    }
+
+    // A name change has to reach full_name too, which is what everything else
+    // in the app actually displays.
+    if (updates.last_name || updates.first_name || 'middle_initial' in updates) {
+      updates.full_name = composeFullName({
+        lastName: updates.last_name ?? req.profile.last_name ?? '',
+        firstName: updates.first_name ?? req.profile.first_name ?? '',
+        middleInitial:
+          'middle_initial' in updates
+            ? (updates.middle_initial ?? '')
+            : (req.profile.middle_initial ?? ''),
+      });
+    }
+
+    const columns = Object.keys(updates);
+    const assignments = columns.map((column, index) => `${column} = $${index + 2}`).join(', ');
+
+    const { rows } = await pool.query(
+      `update public.profiles set ${assignments} where id = $1 returning ${PROFILE_COLUMNS}`,
+      [req.profile.id, ...columns.map((column) => updates[column])],
+    );
+
+    // group_name on the profile mirrors the group, not the person, so a rename
+    // of the person does not touch it.
+    res.json({ profile: { ...rows[0], group_id: req.profile.group_id ?? null } });
+  }),
 );
 
 /* ---------------------------------------------------------- data routes -- */
@@ -1224,20 +1392,25 @@ app.post(
       const requestedId = String(req.body?.group_id ?? '').trim();
       if (requestedId) {
         if (!UUID_RE.test(requestedId)) throw new HttpError(400, 'That group is not valid.');
-        const { rows: advised } = await pool.query(
+        // Same set the picker offers: their department, or a group they already
+        // advise. Anything else is somebody else's school.
+        const { rows: bookable } = await pool.query(
           `select g.id, g.name
              from public.thesis_groups g
             where g.id = $1
-              and exists (
-                select 1 from public.consultations c
-                 where c.group_id = g.id and c.adviser_id = $2
+              and (
+                    ($3::text is null or g.department is null or g.department = $3)
+                 or exists (
+                      select 1 from public.consultations c
+                       where c.group_id = g.id and c.adviser_id = $2
+                    )
               )
             limit 1`,
-          [requestedId, req.profile.id],
+          [requestedId, req.profile.id, req.profile.department ?? null],
         );
-        if (!advised.length) throw new HttpError(403, 'You do not advise that group.');
-        groupId = advised[0].id;
-        groupName = advised[0].name;
+        if (!bookable.length) throw new HttpError(403, 'That group is not in your department.');
+        groupId = bookable[0].id;
+        groupName = bookable[0].name;
       } else {
         groupName = String(req.body?.group_name ?? '').trim();
         if (!groupName) throw new HttpError(400, 'Name the group this session is with.');
@@ -1764,17 +1937,24 @@ app.get(
     const { id, role, group_name: groupName, group_id: groupId } = req.profile;
 
     const { rows } = await pool.query(
-      `select c.group_name,
+      `select g.id                                                       as group_id,
+              coalesce(g.name, min(c.group_name))                        as group_name,
+              g.section                                                  as section,
               count(*)::int                                              as total,
               count(*) filter (where c.status = 'completed')::int        as completed,
               max(c.meeting_date)                                        as last_session
          from public.consultations c
+         left join public.thesis_groups g on g.id = c.group_id
         where c.group_name is not null
           and (
                 ($2 = 'adviser' and c.adviser_id = $1)
              or ($2 <> 'adviser' and ${groupVisibility({ creator: '$1', groupId: '$4', groupName: '$3' })})
           )
-        group by c.group_name
+        -- Rows with a real group collapse on its id, so a rename keeps one
+        -- record rather than splitting it. Rows without one still collapse on
+        -- the name, which is all they have.
+        group by g.id, g.name, g.section,
+                 (case when c.group_id is null then c.group_name end)
         order by max(c.meeting_date) desc`,
       [id, role, groupName, groupId],
     );
@@ -1784,7 +1964,8 @@ app.get(
 );
 
 /**
- * GET /api/record?group=Group%207
+ * GET /api/record?group_id=<uuid>   (a registered group)
+ * GET /api/record?group=Group%207    (a group that predates them)
  *
  * Every session that group has already held, in order, with its minutes,
  * attendance and action items. Access is the same predicate as everywhere else,
@@ -1795,8 +1976,19 @@ app.get(
   '/api/record',
   requireAuth,
   asyncRoute(async (req, res) => {
+    /*
+     * Prefer the id. Two sections can both have a "Group 1", so a name alone
+     * would pull both into one document -- and this document is the log a group
+     * hands in at their defense.
+     */
+    const recordGroupId = String(req.query.group_id ?? '').trim();
     const group = String(req.query.group ?? '').trim();
-    if (!group) throw new HttpError(400, 'Name the group whose record you want.');
+    if (recordGroupId && !UUID_RE.test(recordGroupId)) {
+      throw new HttpError(400, 'That group is not valid.');
+    }
+    if (!recordGroupId && !group) {
+      throw new HttpError(400, 'Name the group whose record you want.');
+    }
 
     const { id, role, group_name: groupName, group_id: groupId } = req.profile;
 
@@ -1829,7 +2021,10 @@ app.get(
               ), '[]'::json) as action_items
          from public.consultations c
          left join public.profiles p on p.id = c.adviser_id
-        where c.group_name = $4
+        where (
+                ($6::uuid is not null and c.group_id = $6)
+             or ($6::uuid is null and c.group_id is null and c.group_name = $4)
+              )
           and c.status in ('scheduled', 'completed')
           and (c.completed_at is not null or c.meeting_date < now())
           and (
@@ -1837,7 +2032,7 @@ app.get(
              or ($2 <> 'adviser' and ${groupVisibility({ creator: '$1', groupId: '$5', groupName: '$3' })})
           )
         order by c.meeting_date asc`,
-      [id, role, groupName, group, groupId],
+      [id, role, groupName, group || null, groupId, recordGroupId || null],
     );
 
     if (!rows.length) {
@@ -1846,6 +2041,10 @@ app.get(
 
     // The heading needs the group's own details, which live on the students
     // rather than on the consultation.
+    // A registered group has a roster; one that predates groups has only the
+    // students who happened to carry the same name on their profile.
+    const headingGroupId = recordGroupId || rows[0]?.group_id || null;
+
     const { rows: members } = await pool.query(
       `select p.full_name, p.student_id, p.course, p.year_level, p.section
          from public.profiles p
@@ -1856,11 +2055,24 @@ app.get(
          from public.profiles p
         where $1::uuid is null and p.role = 'student' and p.group_name = $2
         order by full_name asc`,
-      [rows[0]?.group_id ?? null, group],
+      [headingGroupId, group || null],
     );
 
+    let heading = group;
+    let section = null;
+    if (headingGroupId) {
+      const { rows: named } = await pool.query(
+        `select name, section from public.thesis_groups where id = $1 limit 1`,
+        [headingGroupId],
+      );
+      heading = named[0]?.name ?? group;
+      section = named[0]?.section ?? null;
+    }
+
     res.json({
-      group,
+      group: heading,
+      group_id: headingGroupId,
+      section,
       members,
       sessions: rows,
       generated_at: new Date().toISOString(),
@@ -2241,28 +2453,44 @@ app.delete(
 );
 
 /**
- * GET /api/thesis-groups/advised
+ * GET /api/thesis-groups/bookable
  *
- * For an adviser booking a session: the groups they already hold consultations
- * with. Not a directory -- an adviser cannot enumerate groups they have never
- * met, the same way a student cannot.
+ * The groups an adviser may schedule a session with: every group in their own
+ * department, plus any they already advise.
+ *
+ * It deliberately is not limited to groups they have already met. That was the
+ * first version and it could not work: a group's very first session is by
+ * definition with an adviser who has never advised it, so a newly formed group
+ * could never be booked at all and the session landed with no group attached --
+ * invisible to the very members it was for.
+ *
+ * Department scoping is the same rule the adviser directory uses in the other
+ * direction, so this exposes nothing a student could not already see about who
+ * teaches their school.
  */
 app.get(
-  '/api/thesis-groups/advised',
+  '/api/thesis-groups/bookable',
   requireAuth,
   asyncRoute(async (req, res) => {
     if (req.profile.role !== 'adviser') return res.json({ groups: [] });
 
+    const department = req.profile.department ?? null;
+
     const { rows } = await pool.query(
-      `select distinct g.id, g.name, g.section
+      `select g.id, g.name, g.section, g.department,
+              (select count(*)::int from public.thesis_group_members m where m.group_id = g.id)
+                as member_count
          from public.thesis_groups g
-         join public.consultations c on c.group_id = g.id
-        where c.adviser_id = $1
-        order by g.name asc`,
-      [req.profile.id],
+        where ($1::text is null or g.department is null or g.department = $1)
+           or exists (
+                select 1 from public.consultations c
+                 where c.group_id = g.id and c.adviser_id = $2
+              )
+        order by g.section asc, g.name asc`,
+      [department, req.profile.id],
     );
 
-    res.json({ groups: rows });
+    res.json({ groups: rows, department });
   }),
 );
 

@@ -5,10 +5,12 @@ import {
   Circle,
   FileText,
   GraduationCap,
+  Loader2,
   Printer,
   Users,
 } from 'lucide-react';
 import { api } from '../lib/api.js';
+import { MILESTONES } from '../lib/milestones.js';
 
 const sessionDateFormatter = new Intl.DateTimeFormat(undefined, {
   month: 'short',
@@ -38,9 +40,24 @@ const stampFormatter = new Intl.DateTimeFormat(undefined, {
  * sheet is already HTML, a print stylesheet strips the app shell around it, and
  * a dependency that renders the same thing twice is a dependency that drifts.
  */
-export default function RecordView({ token, isAdviser, profile }) {
+/**
+ * How a group is addressed in the picker.
+ *
+ * Registered groups go by id, because two sections can both have a "Group 1"
+ * and merging their records would put another group's sessions into the log a
+ * group signs. Older consultations have only a name to go on.
+ */
+function keyOf(group) {
+  if (!group) return '';
+  return group.group_id ? `id:${group.group_id}` : `name:${group.group_name}`;
+}
+
+export default function RecordView({ token, isAdviser }) {
   const [groups, setGroups] = useState([]);
-  const [selected, setSelected] = useState(profile?.group_name ?? '');
+  // Keyed by group id where there is one. Two sections can both have a
+  // "Group 1", and the record is the document a group hands in, so a name is
+  // not a safe address for it.
+  const [selected, setSelected] = useState('');
   const [record, setRecord] = useState(null);
   const [loadingGroups, setLoadingGroups] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -55,7 +72,7 @@ export default function RecordView({ token, isAdviser, profile }) {
         const list = result.groups ?? [];
         setGroups(list);
         // A student has one group; an adviser lands on their most recent.
-        setSelected((current) => current || list[0]?.group_name || '');
+        setSelected((current) => current || keyOf(list[0]) || '');
       })
       .catch((err) => {
         if (!cancelled) setError(err.message);
@@ -73,7 +90,11 @@ export default function RecordView({ token, isAdviser, profile }) {
     setLoading(true);
     setError('');
     try {
-      setRecord(await api(`/record?group=${encodeURIComponent(selected)}`, { token }));
+      // "id:<uuid>" for a registered group, "name:<text>" for an older one.
+      const query = selected.startsWith('id:')
+        ? `group_id=${encodeURIComponent(selected.slice(3))}`
+        : `group=${encodeURIComponent(selected.slice(5))}`;
+      setRecord(await api(`/record?${query}`, { token }));
     } catch (err) {
       setRecord(null);
       setError(err.message);
@@ -118,8 +139,9 @@ export default function RecordView({ token, isAdviser, profile }) {
                 className="rounded-lg border border-ink-200 bg-white px-3.5 py-2.5 text-sm font-medium text-ink-900 transition focus:border-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-700/15"
               >
                 {groups.map((group) => (
-                  <option key={group.group_name} value={group.group_name}>
-                    {group.group_name} ({group.total})
+                  <option key={keyOf(group)} value={keyOf(group)}>
+                    {group.group_name}
+                    {group.section ? ` - ${group.section}` : ''} ({group.total})
                   </option>
                 ))}
               </select>
@@ -153,7 +175,7 @@ export default function RecordView({ token, isAdviser, profile }) {
       ) : !record ? (
         <EmptyRecord isAdviser={isAdviser} hasGroups={groups.length > 0} />
       ) : (
-        <RecordSheet record={record} completed={completed} />
+        <RecordSheet record={record} completed={completed} token={token} isAdviser={isAdviser} />
       )}
     </div>
   );
@@ -161,11 +183,16 @@ export default function RecordView({ token, isAdviser, profile }) {
 
 /* ------------------------------------------------------------- the sheet -- */
 
-function RecordSheet({ record, completed }) {
+function RecordSheet({ record, completed, token, isAdviser }) {
   const first = record.sessions[0];
   const last = record.sessions[record.sessions.length - 1];
 
   return (
+    <>
+      {isAdviser && record?.group_id ? (
+        <MilestoneEditor token={token} groupId={record.group_id} groupName={record.group} />
+      ) : null}
+
     <article className="print-sheet rounded-xl bg-white p-8 border border-ink-200 sm:p-10">
       {/* --------------------------------------------------------- letterhead */}
       <header className="border-b-2 border-ink-900 pb-5">
@@ -250,6 +277,7 @@ function RecordSheet({ record, completed }) {
         </div>
       </footer>
     </article>
+    </>
   );
 }
 
@@ -373,5 +401,119 @@ function EmptyRecord({ isAdviser, hasGroups }) {
             : 'Your record builds itself as your group holds consultations. Book one to get started.'}
       </p>
     </div>
+  );
+}
+
+/**
+ * The adviser's milestone control.
+ *
+ * A milestone is marked during a wrap-up, which is the only moment anyone knows
+ * -- but until now there was no way to undo one marked by mistake, and the API
+ * has always supported it. This is that missing half, put where an adviser has
+ * already chosen which group they are looking at.
+ *
+ * Never printed. The record is the group's document; this is the adviser's
+ * control panel sitting above it.
+ */
+function MilestoneEditor({ token, groupId, groupName }) {
+  const [completed, setCompleted] = useState(() => new Set());
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState('');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    api(`/milestones?group=${encodeURIComponent(groupId)}`, { token })
+      .then((result) => {
+        if (cancelled) return;
+        setCompleted(new Set((result.milestones ?? []).map((row) => row.milestone)));
+        setError('');
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err.message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [groupId, token]);
+
+  async function toggle(key) {
+    if (busy) return;
+    const nextValue = !completed.has(key);
+    setBusy(key);
+    setError('');
+    try {
+      await api(`/milestones/${key}`, {
+        method: 'PUT',
+        token,
+        body: { groupId, completed: nextValue },
+      });
+      setCompleted((prev) => {
+        const next = new Set(prev);
+        if (nextValue) next.add(key);
+        else next.delete(key);
+        return next;
+      });
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  const reached = MILESTONES.filter((item) => completed.has(item.key)).length;
+
+  return (
+    <section className="no-print mb-6 rounded-xl border border-ink-200 bg-white p-5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-[16px] font-semibold text-ink-900">Capstone milestones</p>
+        <span className="tnum rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
+          {Math.round((reached / MILESTONES.length) * 100)}% complete
+        </span>
+      </div>
+      <p className="mt-1 text-[13px] text-ink-500">
+        What {groupName} has finished. Tap one to mark or unmark it; the group sees this on their
+        progress tracker.
+      </p>
+
+      {error ? (
+        <p role="alert" className="mt-3 text-[13px] font-medium text-rose-700">
+          {error}
+        </p>
+      ) : null}
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        {MILESTONES.map((item) => {
+          const done = completed.has(item.key);
+          return (
+            <button
+              key={item.key}
+              type="button"
+              disabled={loading || Boolean(busy)}
+              aria-pressed={done}
+              onClick={() => toggle(item.key)}
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition disabled:opacity-60 ${
+                done
+                  ? 'border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700'
+                  : 'border-ink-200 bg-white text-ink-700 hover:border-ink-300 hover:bg-ink-50'
+              }`}
+            >
+              {busy === item.key ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              ) : done ? (
+                <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+              ) : (
+                <Circle className="h-3.5 w-3.5" aria-hidden="true" />
+              )}
+              {item.label}
+            </button>
+          );
+        })}
+      </div>
+    </section>
   );
 }
