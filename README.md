@@ -79,6 +79,48 @@ select email, role, employee_id, department, registration_completed_at
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for the full Gmail SMTP and Vercel walkthroughs.
 
+## Who this server will email
+
+`hau.edu.ph` is a real domain with real staff behind it, and the mock adviser
+accounts are seeded with real-looking addresses (`baquino@hau.edu.ph` and 39
+others). Two rules keep a live login code out of a stranger's inbox.
+
+**1. `SIGNUP_ALLOWLIST` — the only addresses we will mail at all.** Empty means
+sign-up is open to any HAU address, which is fine for a private test and not
+fine for anything a stranger can reach: they could make this server send a real
+6-digit code to an actual faculty member. Set it before demoing publicly.
+
+```bash
+# a whole address, or a domain written with its at-sign
+SIGNUP_ALLOWLIST=japangilinan1@student.hau.edu.ph,@student.hau.edu.ph
+```
+
+Do not confuse it with `AUTH_EMAIL_ALLOWLIST`, which does the opposite:
+
+| Variable | Effect |
+| --- | --- |
+| `AUTH_EMAIL_ALLOWLIST` | **Widens** — non-HAU addresses that may register |
+| `SIGNUP_ALLOWLIST` | **Narrows** — the only addresses we will email |
+
+**2. `/api/auth/send-code` is a resend, not a send.** It used to mail any
+well-formed HAU address on request, creating the account on the way — an open
+relay pointed at a university's domain. It now requires a half-finished sign-up
+to resend for, and passes `createUser: false`, so it cannot conscript an address
+that has no account:
+
+| Address | Result |
+| --- | --- |
+| A half-finished sign-up | code resent |
+| Any of the 40 seeded advisers | `409` — already registered, nothing sent |
+| A real HAU address that never signed up | `404` — nothing sent |
+
+The seeded advisers are additionally protected on `/api/auth/start`, which
+refuses any address whose registration is already complete — and all 40 are,
+since the adviser directory only lists completed registrations.
+
+> The mock accounts were created with their emails pre-confirmed, so Supabase
+> never mailed them: `confirmation_sent_at` is null on all 40.
+
 ## 2. Supabase Auth settings
 
 The OTP flow only sends a **6-digit code** if the email template says so. In

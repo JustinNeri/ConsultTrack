@@ -33,6 +33,14 @@ const {
   // An entry may name the role it should get: "you@gmail.com:adviser".
   // Leave empty in production.
   AUTH_EMAIL_ALLOWLIST = '',
+  // The opposite of AUTH_EMAIL_ALLOWLIST, and easy to confuse with it:
+  //   AUTH_EMAIL_ALLOWLIST   WIDENS  - non-HAU addresses that may register
+  //   SIGNUP_ALLOWLIST       NARROWS - the ONLY addresses we will email at all
+  // Empty means open sign-up: any HAU address can ask for a code. Since
+  // hau.edu.ph is a real domain with real staff behind it, set this on any
+  // deployment that is not a private test, or a stranger poking at the demo can
+  // make this server mail a live login code to an actual faculty member.
+  SIGNUP_ALLOWLIST = '',
   // Consultation hours are wall-clock campus time: an adviser free at 1 PM means
   // 1 PM in Angeles City, whatever the server's own clock is set to. Every
   // conversion between a weekly block and a real instant goes through this.
@@ -106,6 +114,41 @@ const EMAIL_ALLOWLIST = new Map(
     })
     .filter(([address]) => address),
 );
+
+/*
+ * Who this server is willing to send a login code to.
+ *
+ * An entry is either a whole address ("dean@hau.edu.ph") or a domain written
+ * with its at-sign ("@student.hau.edu.ph"), which allows everyone on it. An
+ * empty list disables the gate entirely and sign-up stays open, which is the
+ * historical behaviour.
+ */
+const SIGNUP_GATE = SIGNUP_ALLOWLIST.split(',')
+  .map((entry) => entry.trim().toLowerCase())
+  .filter(Boolean);
+
+/**
+ * Refuses to email an address the deployment has not opted in to.
+ *
+ * This is the only thing standing between a public demo and a real inbox: every
+ * route that can cause mail to be sent calls it first.
+ */
+function assertMayReceiveCode(email) {
+  if (!SIGNUP_GATE.length) return;
+
+  const address = String(email).trim().toLowerCase();
+  const domain = address.slice(address.lastIndexOf('@'));
+  const allowed = SIGNUP_GATE.some((entry) =>
+    entry.startsWith('@') ? domain === entry : address === entry,
+  );
+
+  if (!allowed) {
+    throw new HttpError(
+      403,
+      'Sign-up is limited to invited addresses on this deployment. Ask the administrator to add yours.',
+    );
+  }
+}
 
 // Loose on purpose - confirm HAU's real student-number format and tighten this.
 const STUDENT_ID_RE = /^[0-9-]{6,20}$/;
@@ -236,6 +279,7 @@ app.post(
   '/api/auth/start',
   asyncRoute(async (req, res) => {
     const email = requireHauEmail(req.body?.email);
+    assertMayReceiveCode(email);
 
     const { rows } = await pool.query(
       `select registration_completed_at from public.profiles where email = $1`,
@@ -253,13 +297,32 @@ app.post(
 /**
  * POST /api/auth/send-code
  * Body: { email } - resends the code for an in-progress registration.
+ *
+ * Strictly a *resend*. It used to mail any well-formed HAU address on request,
+ * creating the account on the way, which made it an open relay pointed at a real
+ * university's domain: anyone could have this server send a live login code to
+ * a real member of staff. There must now already be a half-finished sign-up to
+ * resend for, and `createUser: false` means it can no longer conscript an
+ * address that has no account.
  */
 app.post(
   '/api/auth/send-code',
   asyncRoute(async (req, res) => {
     const email = requireHauEmail(req.body?.email);
+    assertMayReceiveCode(email);
 
-    await sendAccessCode(email, { createUser: true });
+    const { rows } = await pool.query(
+      `select registration_completed_at from public.profiles where email = $1`,
+      [email],
+    );
+    if (!rows.length) {
+      throw new HttpError(404, 'Start the sign-up first, then we can resend your code.');
+    }
+    if (rows[0].registration_completed_at) {
+      throw new HttpError(409, 'That email is already registered. Sign in instead.');
+    }
+
+    await sendAccessCode(email, { createUser: false });
     res.json({ ok: true, message: `Access code sent to ${email}.` });
   }),
 );
