@@ -37,6 +37,11 @@ const RESEND_SECONDS = 60;
 const HAU_EMAIL_HINT = 'Only HAU accounts (@student.hau.edu.ph or @hau.edu.ph) can register.';
 const CODE_LENGTH = 6;
 const MIN_PASSWORD = 8;
+/*
+ * Campus photograph behind the sign-in screen. It lives in client/public, so
+ * the path is site-absolute. A missing file just leaves flat maroon.
+ */
+const AUTH_BACKDROP = '/campus.jpg';
 
 /**
  * Four views:
@@ -292,10 +297,89 @@ export default function AuthScreen({ onAuthenticated }) {
   const isAdviser = pendingRole === 'adviser';
   const typedRole = roleForEmail(email);
 
+  /*
+   * Sign-in gets the full-bleed treatment: a campus photograph under a maroon
+   * wash, the wordmark and headline set directly on it, and the form alone in a
+   * card floating above. Sign-up keeps the two-column card -- three steps of
+   * fields need the room -- but stands on the same backdrop, so the two screens
+   * read as one place rather than two products.
+   */
+  if (view === 'login') {
+    return (
+      <AuthShell>
+        <div className="animate-rise w-full max-w-[420px]">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-brand-700 ring-1 ring-white/20">
+              <GraduationCap className="h-5 w-5 text-white" aria-hidden="true" />
+            </span>
+            <span className="leading-tight">
+              <span className="block text-[17px] font-semibold tracking-tight text-white">
+                ConsultTrack
+              </span>
+              <span className="block text-[11px] text-brand-100/70">Holy Angel University</span>
+            </span>
+          </div>
+
+          <h1 className="mt-9 text-[38px] font-bold leading-[1.05] tracking-[-0.03em] text-white sm:text-[42px]">
+            Welcome back
+          </h1>
+          <p className="mt-2.5 text-[14px] text-brand-100/75">
+            Sign in to book and track your consultations.
+          </p>
+
+          <form
+            onSubmit={handleLogin}
+            noValidate
+            className="mt-7 rounded-2xl bg-white p-6 shadow-[0_28px_70px_-24px_rgba(20,4,10,0.75)] sm:p-7"
+          >
+            <Field label="Email address" htmlFor="login-email" icon={Mail}>
+              <input
+                id="login-email"
+                type="email"
+                autoComplete="email"
+                required
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                placeholder="juan.delacruz@student.hau.edu.ph"
+                className={INPUT}
+              />
+            </Field>
+
+            <Field label="Password" htmlFor="login-password" icon={Lock} className="mt-4">
+              <PasswordInput
+                id="login-password"
+                autoComplete="current-password"
+                value={password}
+                onChange={setPassword}
+                visible={showPassword}
+                onToggle={() => setShowPassword((v) => !v)}
+              />
+            </Field>
+
+            {error ? <ErrorNote message={error} /> : null}
+
+            <SubmitButton busy={busy} label="Sign in" busyLabel="Signing in..." />
+          </form>
+
+          <p className="mt-6 text-center text-[13px] text-brand-100/80">
+            First time here?{' '}
+            <button
+              type="button"
+              onClick={() => switchView('email')}
+              className="font-semibold text-white underline underline-offset-4 transition hover:text-brand-100"
+            >
+              Create an account
+            </button>
+          </p>
+        </div>
+      </AuthShell>
+    );
+  }
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-canvas px-4 py-6 sm:px-6 lg:py-10">
+    <AuthShell>
       <div className={`w-full transition-all duration-300 ${wide ? 'max-w-6xl' : 'max-w-5xl'}`}>
-        <div className="animate-rise overflow-hidden rounded-2xl border border-ink-200 bg-white shadow-lift">
+        <div className="animate-rise overflow-hidden rounded-2xl border border-white/10 bg-white shadow-[0_28px_70px_-24px_rgba(20,4,10,0.75)]">
           <div className="grid lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1fr)]">
             <BrandPanel view={view} />
 
@@ -303,55 +387,7 @@ export default function AuthScreen({ onAuthenticated }) {
             <div className="scrollbar-slim flex max-h-[calc(100vh-3rem)] flex-col justify-center overflow-y-auto p-6 sm:p-10">
               <MobileBrandBar />
 
-              {view !== 'login' ? <Steps view={view} /> : null}
-
-              {/* ------------------------------------------------------ login */}
-              {view === 'login' ? (
-                <form onSubmit={handleLogin} noValidate>
-                  <FormHeading
-                    eyebrow="Welcome back"
-                    title="Sign in to ConsultTrack"
-                    subtitle="Use the HAU email and password you registered with."
-                  />
-
-                  <Field label="Email address" htmlFor="login-email" icon={Mail} className="mt-7">
-                    <input
-                      id="login-email"
-                      type="email"
-                      autoComplete="email"
-                      required
-                      value={email}
-                      onChange={(event) => setEmail(event.target.value)}
-                      placeholder="juan.delacruz@student.hau.edu.ph"
-                      className={INPUT}
-                    />
-                  </Field>
-
-                  <Field label="Password" htmlFor="login-password" icon={Lock} className="mt-4">
-                    <PasswordInput
-                      id="login-password"
-                      autoComplete="current-password"
-                      value={password}
-                      onChange={setPassword}
-                      visible={showPassword}
-                      onToggle={() => setShowPassword((v) => !v)}
-                    />
-                  </Field>
-
-                  {error ? <ErrorNote message={error} /> : null}
-
-                  <SubmitButton busy={busy} label="Sign in" busyLabel="Signing in..." />
-
-                  <Divider />
-
-                  <p className="text-center text-sm text-ink-500">
-                    No account yet?{' '}
-                    <button type="button" onClick={() => switchView('email')} className={LINK}>
-                      Create one
-                    </button>
-                  </p>
-                </form>
-              ) : null}
+              <Steps view={view} />
 
               {/* --------------------------------------------- step 1: email */}
               {view === 'email' ? (
@@ -753,11 +789,43 @@ export default function AuthScreen({ onAuthenticated }) {
         </div>
 
         {view === 'email' || view === 'verify' ? (
-          <p className="mt-5 text-center text-xs text-ink-400">
+          <p className="mt-5 text-center text-xs text-brand-100/70">
             Check your spam folder if the code does not arrive within a minute.
           </p>
         ) : null}
       </div>
+    </AuthShell>
+  );
+}
+
+/* ------------------------------------------------------------- auth shell -- */
+
+/*
+ * Both auth screens stand on the same ground: the campus photograph, desaturated
+ * and pushed under a maroon wash that is near-opaque at the top -- so white type
+ * lands on flat colour, not on whatever the photo happens to be doing -- and
+ * thins toward the bottom, where the building is allowed to show through.
+ */
+function AuthShell({ children }) {
+  return (
+    <div className="relative flex min-h-screen flex-col items-center justify-center overflow-hidden px-4 py-10 sm:px-6">
+      <div aria-hidden="true" className="absolute inset-0">
+        {/* What shows if the photograph is missing: flat maroon, still on-brand. */}
+        <div className="absolute inset-0 bg-brand-950" />
+        <div
+          className="absolute inset-0 bg-cover bg-center saturate-[0.55]"
+          style={{ backgroundImage: `url('${AUTH_BACKDROP}')` }}
+        />
+        {/* Flat tint first, so the photo is maroon everywhere, then the falloff. */}
+        <div className="absolute inset-0 bg-brand-950/55" />
+        <div className="absolute inset-0 bg-gradient-to-b from-brand-950 via-brand-950/90 to-brand-900/25" />
+      </div>
+
+      <div className="relative flex w-full flex-col items-center">{children}</div>
+
+      <p className="relative mt-10 text-center text-[11px] text-white/40">
+        Holy Angel University &middot; ConsultTrack
+      </p>
     </div>
   );
 }
