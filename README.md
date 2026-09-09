@@ -32,12 +32,36 @@ The migration files are kept for reproducibility.
 
 **One addition to the spec:** `profiles.group_name`. Without it there is no way to
 tell which consultations a given student is allowed to see — `consultations` only
-carries a `group_name` string, and nothing linked a student to a group. Set it per
-student after they first sign in:
+carries a `group_name` string, and nothing linked a student to a group. A student
+types their group when booking, and that value is what the booking is filed under;
+you can also set it on the profile so it prefills:
 
 ```sql
-update public.profiles set group_name = 'Group 7 - BSIT', role = 'student'
- where email = 'juan.delacruz@gmail.com';
+update public.profiles set group_name = 'Group 7 - BSIT'
+ where email = 'juan.delacruz@student.hau.edu.ph';
+```
+
+## Accounts
+
+Two kinds, and the **email domain decides which** — nothing in the sign-up form can
+override it:
+
+| Address | Role | Sign-up asks for |
+| --- | --- | --- |
+| `@student.hau.edu.ph` | `student` | student ID, department, course, year level |
+| `@hau.edu.ph` | `adviser` | faculty ID, department, academic position (optional) |
+
+Advisers register through the same three steps as students — email, 6-digit code,
+details — at the same URL. There is no separate invite or admin step: a teacher
+signs up with their HAU faculty address and lands on an adviser dashboard showing
+the sessions booked with them. Once registered they appear in the adviser dropdown
+students pick from when booking.
+
+To check who registered as what:
+
+```sql
+select email, role, employee_id, department, registration_completed_at
+  from public.profiles order by role, email;
 ```
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for the full Gmail SMTP and Vercel walkthroughs.
@@ -102,6 +126,7 @@ cards need something to write to.
 - **Capstone milestones** (`MILESTONES` / `COMPLETED_MILESTONES` in `Dashboard.jsx`)
   are hard-coded, since no table tracks them. The 60% / "System Review" figures come
   from there.
-- **Adviser assignment** — a student booking a consultation leaves `adviser_id` null
-  unless the request names one. Add an adviser picker, or an `adviser_id` column on
-  `profiles`, when you decide how groups are paired with advisers.
+- **Adviser assignment** — a student picks their adviser per booking, from the
+  directory at `GET /api/advisers`. There is no standing group-to-adviser link, so
+  "Groups booked" on the adviser dashboard counts only groups with an upcoming
+  session. Add an `adviser_id` on the group if you want a permanent pairing.

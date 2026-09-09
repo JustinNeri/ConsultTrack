@@ -56,3 +56,24 @@ export const DEPARTMENTS = {
 export const DEPARTMENT_NAMES = Object.keys(DEPARTMENTS);
 
 export const YEAR_LEVELS = ['1st Year', '2nd Year', '3rd Year', '4th Year', '5th Year'];
+
+/** Academic ranks an adviser can pick during sign-up. Mirrors FACULTY_POSITIONS in the API. */
+export const FACULTY_POSITIONS = [
+  'Professor',
+  'Associate Professor',
+  'Assistant Professor',
+  'Senior Lecturer',
+  'Lecturer',
+  'Instructor',
+];
+
+/**
+ * The account type an address will create, mirroring roleForEmail() in the API.
+ * Advisory only - the server decides for real, from the verified address.
+ */
+export function roleForEmail(email) {
+  const address = String(email).trim().toLowerCase();
+  if (address.endsWith('@hau.edu.ph')) return 'adviser';
+  if (address.endsWith('@student.hau.edu.ph')) return 'student';
+  return null;
+}

@@ -91,12 +91,23 @@ Fine for a capstone. Move to Resend / SendGrid / Postmark before a real launch.
 
 ## A6. Who is allowed to sign up
 
-Registration is limited to HAU Google Workspace accounts — `@student.hau.edu.ph`
-for students, `@hau.edu.ph` for faculty and advisers. The list lives in
-`HAU_DOMAINS` in `server/app.js`; the check runs on `/auth/start`,
-`/auth/send-code` and `/auth/verify-code`, so nobody can bypass it from the
-browser. Sign-in only checks that the address is well formed, so an account
-created before this rule was added still works.
+Registration is limited to HAU Google Workspace accounts, and the domain also
+decides the account type:
+
+| Address | Role |
+| --- | --- |
+| `@student.hau.edu.ph` | student |
+| `@hau.edu.ph` | adviser (faculty) |
+
+Both live in `HAU_DOMAINS` / `roleForEmail()` in `server/app.js`. The domain check
+runs on `/auth/start`, `/auth/send-code` and `/auth/verify-code`, and the role is
+stamped on the profile when the code is verified — the sign-up form cannot ask for
+a role, so a student cannot register as an adviser. Sign-in only checks that the
+address is well formed, so an account created before this rule was added still
+works.
+
+Advisers use the same three-step sign-up as students; step 3 asks them for a
+faculty ID and academic position instead of a student ID, course and year level.
 
 Delivery to those addresses is ordinary Gmail → Google Workspace mail and needs
 no extra setup. If a code does not arrive, check spam first, then Supabase →

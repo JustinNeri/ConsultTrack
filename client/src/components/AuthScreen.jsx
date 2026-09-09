@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   ArrowRight,
   BookOpen,
+  Briefcase,
   Building2,
   CalendarCheck,
   CalendarRange,
@@ -21,7 +22,13 @@ import {
   User,
 } from 'lucide-react';
 import { api } from '../lib/api.js';
-import { DEPARTMENTS, DEPARTMENT_NAMES, YEAR_LEVELS } from '../lib/hau.js';
+import {
+  DEPARTMENTS,
+  DEPARTMENT_NAMES,
+  FACULTY_POSITIONS,
+  YEAR_LEVELS,
+  roleForEmail,
+} from '../lib/hau.js';
 
 const RESEND_SECONDS = 60;
 // Mirrors HAU_DOMAINS in the API. Shown as guidance only -- the server is what
@@ -43,6 +50,9 @@ export default function AuthScreen({ onAuthenticated }) {
   const [password, setPassword] = useState('');
   const [digits, setDigits] = useState(() => Array(CODE_LENGTH).fill(''));
   const [pendingSession, setPendingSession] = useState(null);
+  // Which form step 3 shows. The server decides this from the verified address;
+  // the local guess only pre-labels the email step.
+  const [pendingRole, setPendingRole] = useState('student');
   const [details, setDetails] = useState({
     lastName: '',
     firstName: '',
@@ -51,6 +61,8 @@ export default function AuthScreen({ onAuthenticated }) {
     department: '',
     yearLevel: '',
     course: '',
+    employeeId: '',
+    facultyPosition: '',
     password: '',
     confirmPassword: '',
   });
@@ -150,6 +162,7 @@ export default function AuthScreen({ onAuthenticated }) {
           return;
         }
         setPendingSession(result.session);
+        setPendingRole(result.profile?.role ?? roleForEmail(email) ?? 'student');
         setNotice('');
         setView('details');
       } catch (err) {
@@ -209,12 +222,19 @@ export default function AuthScreen({ onAuthenticated }) {
           lastName: details.lastName.trim(),
           firstName: details.firstName.trim(),
           middleInitial: details.middleInitial.trim(),
-          studentId: details.studentId.trim(),
           department: details.department,
-          course: details.course,
-          yearLevel: details.yearLevel,
           password: details.password,
           refresh_token: pendingSession?.refresh_token,
+          ...(pendingRole === 'adviser'
+            ? {
+                employeeId: details.employeeId.trim(),
+                facultyPosition: details.facultyPosition,
+              }
+            : {
+                studentId: details.studentId.trim(),
+                course: details.course,
+                yearLevel: details.yearLevel,
+              }),
         },
       });
       onAuthenticated({ ...result.session, profile: result.profile });
@@ -265,6 +285,8 @@ export default function AuthScreen({ onAuthenticated }) {
 
   const courses = details.department ? DEPARTMENTS[details.department] ?? [] : [];
   const wide = view === 'details';
+  const isAdviser = pendingRole === 'adviser';
+  const typedRole = roleForEmail(email);
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-canvas px-4 py-6 sm:px-6 lg:py-10">
@@ -349,12 +371,35 @@ export default function AuthScreen({ onAuthenticated }) {
                       placeholder="juan.delacruz@student.hau.edu.ph"
                       className={INPUT}
                     />
-                    <p className="mt-2 flex items-start gap-1.5 text-xs text-slate-500">
-                      <ShieldCheck
-                        className="mt-px h-3.5 w-3.5 shrink-0 text-brand-600"
-                        aria-hidden="true"
-                      />
-                      {HAU_EMAIL_HINT}
+                    {typedRole ? (
+                      <p
+                        className={`mt-2 flex items-start gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold ${
+                          typedRole === 'adviser'
+                            ? 'bg-indigo-50 text-indigo-700'
+                            : 'bg-emerald-50 text-emerald-700'
+                        }`}
+                      >
+                        {typedRole === 'adviser' ? (
+                          <Briefcase className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                        ) : (
+                          <GraduationCap className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                        )}
+                        {typedRole === 'adviser'
+                          ? 'Faculty address - this creates an adviser account.'
+                          : 'Student address - this creates a student account.'}
+                      </p>
+                    ) : (
+                      <p className="mt-2 flex items-start gap-1.5 text-xs text-slate-500">
+                        <ShieldCheck
+                          className="mt-px h-3.5 w-3.5 shrink-0 text-brand-600"
+                          aria-hidden="true"
+                        />
+                        {HAU_EMAIL_HINT}
+                      </p>
+                    )}
+                    <p className="mt-2 text-xs text-slate-400">
+                      Students use @student.hau.edu.ph; advisers use their @hau.edu.ph faculty
+                      address.
                     </p>
                   </Field>
 
@@ -464,10 +509,22 @@ export default function AuthScreen({ onAuthenticated }) {
                       <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
                       {email} verified
                     </span>
+                    <span
+                      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-bold ${
+                        isAdviser ? 'bg-indigo-50 text-indigo-700' : 'bg-brand-50 text-brand-700'
+                      }`}
+                    >
+                      {isAdviser ? (
+                        <Briefcase className="h-3.5 w-3.5" aria-hidden="true" />
+                      ) : (
+                        <GraduationCap className="h-3.5 w-3.5" aria-hidden="true" />
+                      )}
+                      {isAdviser ? 'Adviser account' : 'Student account'}
+                    </span>
                     Tell us who you are and set a password.
                   </div>
 
-                  <Legend>Student details</Legend>
+                  <Legend>{isAdviser ? 'Faculty details' : 'Student details'}</Legend>
 
                   <div className="grid gap-4 sm:grid-cols-[2fr_2fr_1fr]">
                     <Field label="Last name" htmlFor="last-name" icon={User}>
@@ -476,7 +533,7 @@ export default function AuthScreen({ onAuthenticated }) {
                         required
                         value={details.lastName}
                         onChange={(event) => updateDetail('lastName', event.target.value)}
-                        placeholder="Dela Cruz"
+                        placeholder={isAdviser ? 'Santos' : 'Dela Cruz'}
                         className={INPUT}
                       />
                     </Field>
@@ -486,7 +543,7 @@ export default function AuthScreen({ onAuthenticated }) {
                         required
                         value={details.firstName}
                         onChange={(event) => updateDetail('firstName', event.target.value)}
-                        placeholder="Juan"
+                        placeholder={isAdviser ? 'Maria' : 'Juan'}
                         className={INPUT}
                       />
                     </Field>
@@ -496,81 +553,145 @@ export default function AuthScreen({ onAuthenticated }) {
                         maxLength={1}
                         value={details.middleInitial}
                         onChange={(event) => updateDetail('middleInitial', event.target.value)}
-                        placeholder="S"
+                        placeholder={isAdviser ? 'L' : 'S'}
                         className={`${INPUT} text-center uppercase`}
                       />
                     </Field>
                   </div>
 
-                  <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                    <Field label="Student ID" htmlFor="student-id" icon={IdCard}>
-                      <input
-                        id="student-id"
-                        required
-                        inputMode="numeric"
-                        value={details.studentId}
-                        onChange={(event) => updateDetail('studentId', event.target.value)}
-                        placeholder="21-1234-567"
-                        className={INPUT}
-                      />
-                    </Field>
+                  {isAdviser ? (
+                    <>
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <Field label="Faculty ID" htmlFor="employee-id" icon={IdCard}>
+                          <input
+                            id="employee-id"
+                            required
+                            value={details.employeeId}
+                            onChange={(event) => updateDetail('employeeId', event.target.value)}
+                            placeholder="FAC-10234"
+                            className={INPUT}
+                          />
+                        </Field>
 
-                    <Field label="Year level" htmlFor="year-level" icon={CalendarRange}>
-                      <select
-                        id="year-level"
-                        required
-                        value={details.yearLevel}
-                        onChange={(event) => updateDetail('yearLevel', event.target.value)}
-                        className={INPUT}
-                      >
-                        <option value="">Select year level</option>
-                        {YEAR_LEVELS.map((year) => (
-                          <option key={year} value={year}>
-                            {year}
-                          </option>
-                        ))}
-                      </select>
-                    </Field>
-                  </div>
+                        <Field
+                          label="Academic position"
+                          htmlFor="faculty-position"
+                          icon={Briefcase}
+                          optional
+                        >
+                          <select
+                            id="faculty-position"
+                            value={details.facultyPosition}
+                            onChange={(event) =>
+                              updateDetail('facultyPosition', event.target.value)
+                            }
+                            className={INPUT}
+                          >
+                            <option value="">Select position</option>
+                            {FACULTY_POSITIONS.map((name) => (
+                              <option key={name} value={name}>
+                                {name}
+                              </option>
+                            ))}
+                          </select>
+                        </Field>
+                      </div>
 
-                  <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                    <Field label="Department" htmlFor="department" icon={Building2}>
-                      <select
-                        id="department"
-                        required
-                        value={details.department}
-                        onChange={(event) => updateDetail('department', event.target.value)}
-                        className={INPUT}
+                      <Field
+                        label="Department"
+                        htmlFor="department"
+                        icon={Building2}
+                        className="mt-4"
                       >
-                        <option value="">Select department</option>
-                        {DEPARTMENT_NAMES.map((name) => (
-                          <option key={name} value={name}>
-                            {name}
-                          </option>
-                        ))}
-                      </select>
-                    </Field>
+                        <select
+                          id="department"
+                          required
+                          value={details.department}
+                          onChange={(event) => updateDetail('department', event.target.value)}
+                          className={INPUT}
+                        >
+                          <option value="">Select department</option>
+                          {DEPARTMENT_NAMES.map((name) => (
+                            <option key={name} value={name}>
+                              {name}
+                            </option>
+                          ))}
+                        </select>
+                      </Field>
+                    </>
+                  ) : (
+                    <>
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <Field label="Student ID" htmlFor="student-id" icon={IdCard}>
+                          <input
+                            id="student-id"
+                            required
+                            inputMode="numeric"
+                            value={details.studentId}
+                            onChange={(event) => updateDetail('studentId', event.target.value)}
+                            placeholder="21-1234-567"
+                            className={INPUT}
+                          />
+                        </Field>
 
-                    <Field label="Course" htmlFor="course" icon={BookOpen}>
-                      <select
-                        id="course"
-                        required
-                        disabled={!details.department}
-                        value={details.course}
-                        onChange={(event) => updateDetail('course', event.target.value)}
-                        className={`${INPUT} disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400`}
-                      >
-                        <option value="">
-                          {details.department ? 'Select course' : 'Pick a department first'}
-                        </option>
-                        {courses.map((name) => (
-                          <option key={name} value={name}>
-                            {name}
-                          </option>
-                        ))}
-                      </select>
-                    </Field>
-                  </div>
+                        <Field label="Year level" htmlFor="year-level" icon={CalendarRange}>
+                          <select
+                            id="year-level"
+                            required
+                            value={details.yearLevel}
+                            onChange={(event) => updateDetail('yearLevel', event.target.value)}
+                            className={INPUT}
+                          >
+                            <option value="">Select year level</option>
+                            {YEAR_LEVELS.map((year) => (
+                              <option key={year} value={year}>
+                                {year}
+                              </option>
+                            ))}
+                          </select>
+                        </Field>
+                      </div>
+
+                      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                        <Field label="Department" htmlFor="department" icon={Building2}>
+                          <select
+                            id="department"
+                            required
+                            value={details.department}
+                            onChange={(event) => updateDetail('department', event.target.value)}
+                            className={INPUT}
+                          >
+                            <option value="">Select department</option>
+                            {DEPARTMENT_NAMES.map((name) => (
+                              <option key={name} value={name}>
+                                {name}
+                              </option>
+                            ))}
+                          </select>
+                        </Field>
+
+                        <Field label="Course" htmlFor="course" icon={BookOpen}>
+                          <select
+                            id="course"
+                            required
+                            disabled={!details.department}
+                            value={details.course}
+                            onChange={(event) => updateDetail('course', event.target.value)}
+                            className={`${INPUT} disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400`}
+                          >
+                            <option value="">
+                              {details.department ? 'Select course' : 'Pick a department first'}
+                            </option>
+                            {courses.map((name) => (
+                              <option key={name} value={name}>
+                                {name}
+                              </option>
+                            ))}
+                          </select>
+                        </Field>
+                      </div>
+                    </>
+                  )}
 
                   <Legend>Password</Legend>
 

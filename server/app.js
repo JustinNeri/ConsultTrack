@@ -75,9 +75,12 @@ class HttpError extends Error {
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const CODE_RE = /^\d{6}$/;
 
-// Sign-up is limited to HAU Google Workspace accounts: students hold addresses
-// on the student subdomain, faculty and advisers on the main one.
-const HAU_DOMAINS = ['student.hau.edu.ph', 'hau.edu.ph'];
+// Sign-up is limited to HAU Google Workspace accounts, and the domain also
+// decides the role: students hold addresses on the student subdomain, faculty
+// and advisers on the main one. Nothing in the request can override this.
+const STUDENT_DOMAIN = 'student.hau.edu.ph';
+const FACULTY_DOMAIN = 'hau.edu.ph';
+const HAU_DOMAINS = [STUDENT_DOMAIN, FACULTY_DOMAIN];
 const HAU_EMAIL_HINT = 'Use your HAU email address (@student.hau.edu.ph or @hau.edu.ph).';
 
 // Individual addresses that skip the domain check, for demos and testing.
@@ -89,6 +92,9 @@ const EMAIL_ALLOWLIST = new Set(
 
 // Loose on purpose - confirm HAU's real student-number format and tighten this.
 const STUDENT_ID_RE = /^[0-9-]{6,20}$/;
+// Faculty numbers vary more than student ones, so letters are allowed too.
+const EMPLOYEE_ID_RE = /^[A-Za-z0-9-]{4,20}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /* --------------------------------------------------------- auth middleware */
 
@@ -135,9 +141,18 @@ async function requireAuth(req, _res, next) {
 const PROFILE_COLUMNS = `id, full_name, email, role, group_name,
                          last_name, first_name, middle_initial,
                          student_id, department, course, year_level,
+                         employee_id, faculty_position,
                          email_verified_at, registration_completed_at`;
 
 const YEAR_LEVELS = ['1st Year', '2nd Year', '3rd Year', '4th Year', '5th Year'];
+const FACULTY_POSITIONS = [
+  'Professor',
+  'Associate Professor',
+  'Assistant Professor',
+  'Senior Lecturer',
+  'Lecturer',
+  'Instructor',
+];
 
 /** "Dela Cruz, Juan M." */
 function composeFullName({ lastName, firstName, middleInitial }) {
@@ -161,6 +176,14 @@ async function sendAccessCode(email, { createUser }) {
     const status = error.status === 429 ? 429 : 400;
     throw new HttpError(status, error.message || 'Could not send the access code.');
   }
+}
+
+/**
+ * The account type a given HAU address gets. Allowlisted test addresses (which
+ * are on no HAU domain at all) register as students.
+ */
+function roleForEmail(email) {
+  return String(email).toLowerCase().endsWith(`@${FACULTY_DOMAIN}`) ? 'adviser' : 'student';
 }
 
 /**
@@ -240,14 +263,21 @@ app.post(
       throw new HttpError(401, error?.message || 'That access code is invalid or has expired.');
     }
 
+    // The role is re-derived on every code, but only re-stamped while the
+    // registration is unfinished -- an existing adviser is never demoted.
     const { rows } = await pool.query(
-      `insert into public.profiles (id, email, full_name, email_verified_at)
-            values ($1, $2, $3, now())
+      `insert into public.profiles (id, email, full_name, role, email_verified_at)
+            values ($1, $2, $3, $4, now())
        on conflict (id) do update
               set email = excluded.email,
+                  role = case
+                           when public.profiles.registration_completed_at is null
+                           then excluded.role
+                           else public.profiles.role
+                         end,
                   email_verified_at = coalesce(public.profiles.email_verified_at, now())
          returning ${PROFILE_COLUMNS}`,
-      [data.user.id, data.user.email, email.split('@')[0]],
+      [data.user.id, data.user.email, email.split('@')[0], roleForEmail(email)],
     );
 
     res.json({
@@ -265,42 +295,71 @@ app.post(
 
 /**
  * POST /api/auth/complete-profile
- * Body: { lastName, firstName, middleInitial?, studentId, department, yearLevel,
- *         course, password, refresh_token }
+ * Body (student): { lastName, firstName, middleInitial?, studentId, department,
+ *                   course, yearLevel, password, refresh_token }
+ * Body (adviser): { lastName, firstName, middleInitial?, employeeId, department,
+ *                   facultyPosition?, password, refresh_token }
  * Header: Authorization: Bearer <access_token from verify-code>
  *
- * Step 3: sets the password on the Supabase user and fills in the profile.
+ * Step 3: sets the password on the Supabase user and fills in the profile. Which
+ * fields are required depends on the role, and the role comes from the verified
+ * address rather than the request body -- a student cannot ask to be an adviser.
  */
 app.post(
   '/api/auth/complete-profile',
   requireAuth,
   asyncRoute(async (req, res) => {
+    const role = roleForEmail(req.profile.email);
+    const isAdviser = role === 'adviser';
+
     const password = String(req.body?.password ?? '');
     const lastName = String(req.body?.lastName ?? '').trim();
     const firstName = String(req.body?.firstName ?? '').trim();
     const middleInitial = String(req.body?.middleInitial ?? '').trim().slice(0, 1);
-    const studentId = String(req.body?.studentId ?? '').trim();
     const department = String(req.body?.department ?? '').trim();
-    const course = String(req.body?.course ?? '').trim();
-    const yearLevel = String(req.body?.yearLevel ?? '').trim();
     const refreshToken = String(req.body?.refresh_token ?? '');
+
+    // Student-only fields.
+    const studentId = isAdviser ? '' : String(req.body?.studentId ?? '').trim();
+    const course = isAdviser ? '' : String(req.body?.course ?? '').trim();
+    const yearLevel = isAdviser ? '' : String(req.body?.yearLevel ?? '').trim();
+
+    // Adviser-only fields.
+    const employeeId = isAdviser ? String(req.body?.employeeId ?? '').trim() : '';
+    const facultyPosition = isAdviser ? String(req.body?.facultyPosition ?? '').trim() : '';
 
     if (password.length < 8) throw new HttpError(400, 'Password must be at least 8 characters.');
     if (!lastName) throw new HttpError(400, 'Last name is required.');
     if (!firstName) throw new HttpError(400, 'First name is required.');
-    if (!STUDENT_ID_RE.test(studentId)) {
-      throw new HttpError(400, 'Enter a valid student ID (6-20 digits or dashes).');
-    }
     if (!department) throw new HttpError(400, 'Department is required.');
-    if (!course) throw new HttpError(400, 'Course is required.');
-    if (!YEAR_LEVELS.includes(yearLevel)) throw new HttpError(400, 'Select your year level.');
     if (!refreshToken) throw new HttpError(400, 'Missing session. Start the sign-up again.');
 
+    if (isAdviser) {
+      if (!EMPLOYEE_ID_RE.test(employeeId)) {
+        throw new HttpError(400, 'Enter a valid faculty ID (4-20 letters, digits or dashes).');
+      }
+      if (facultyPosition && !FACULTY_POSITIONS.includes(facultyPosition)) {
+        throw new HttpError(400, 'Select a valid academic position.');
+      }
+    } else {
+      if (!STUDENT_ID_RE.test(studentId)) {
+        throw new HttpError(400, 'Enter a valid student ID (6-20 digits or dashes).');
+      }
+      if (!course) throw new HttpError(400, 'Course is required.');
+      if (!YEAR_LEVELS.includes(yearLevel)) throw new HttpError(400, 'Select your year level.');
+    }
+
+    const idColumn = isAdviser ? 'employee_id' : 'student_id';
     const { rows: clash } = await pool.query(
-      `select 1 from public.profiles where student_id = $1 and id <> $2 limit 1`,
-      [studentId, req.profile.id],
+      `select 1 from public.profiles where ${idColumn} = $1 and id <> $2 limit 1`,
+      [isAdviser ? employeeId : studentId, req.profile.id],
     );
-    if (clash.length) throw new HttpError(409, 'That student ID is already registered.');
+    if (clash.length) {
+      throw new HttpError(
+        409,
+        `That ${isAdviser ? 'faculty' : 'student'} ID is already registered.`,
+      );
+    }
 
     const fullName = composeFullName({ lastName, firstName, middleInitial });
 
@@ -321,15 +380,15 @@ app.post(
     const { error: updateError } = await userClient.auth.updateUser({
       password,
       data: {
-        role: 'student',
+        role,
         full_name: fullName,
         last_name: lastName,
         first_name: firstName,
         middle_initial: middleInitial,
-        student_id: studentId,
         department,
-        course,
-        year_level: yearLevel,
+        ...(isAdviser
+          ? { employee_id: employeeId, faculty_position: facultyPosition }
+          : { student_id: studentId, course, year_level: yearLevel }),
       },
     });
     if (updateError) {
@@ -340,13 +399,15 @@ app.post(
       `update public.profiles
           set full_name = $2, last_name = $3, first_name = $4, middle_initial = $5,
               student_id = $6, department = $7, course = $8, year_level = $9,
-              role = coalesce(role, 'student'),
+              employee_id = $10, faculty_position = $11,
+              role = $12,
               email_verified_at = coalesce(email_verified_at, now()),
               registration_completed_at = now()
         where id = $1
     returning ${PROFILE_COLUMNS}`,
       [req.profile.id, fullName, lastName, firstName, middleInitial || null,
-       studentId, department, course, yearLevel],
+       studentId || null, department, course || null, yearLevel || null,
+       employeeId || null, facultyPosition || null, role],
     );
 
     res.json({
@@ -408,39 +469,83 @@ app.get(
 /* ---------------------------------------------------------- data routes -- */
 
 /**
+ * Upcoming scheduled consultations the caller may see: advisers get the ones
+ * they advise, students the ones booked for their thesis group.
+ */
+async function upcomingConsultations(profile, limit) {
+  const { id, role, group_name: groupName } = profile;
+
+  const { rows } = await pool.query(
+    `select c.id,
+            c.group_name,
+            c.topic,
+            c.location,
+            c.meeting_date,
+            c.status,
+            p.full_name as adviser_name,
+            p.email     as adviser_email
+       from public.consultations c
+       left join public.profiles p on p.id = c.adviser_id
+      where c.status = 'scheduled'
+        and c.meeting_date >= now()
+        and (
+              ($2 = 'adviser' and c.adviser_id = $1)
+           or ($2 <> 'adviser' and (c.group_name = $3 or c.created_by = $1))
+        )
+      order by c.meeting_date asc
+      limit $4`,
+    [id, role, groupName, limit],
+  );
+  return rows;
+}
+
+/**
  * GET /api/consultations/next
- * The soonest scheduled consultation: advisers see the ones they advise,
- * students see the ones booked for their thesis group.
+ * The soonest scheduled consultation, or null.
  */
 app.get(
   '/api/consultations/next',
   requireAuth,
   asyncRoute(async (req, res) => {
-    const { id, role, group_name: groupName } = req.profile;
+    const rows = await upcomingConsultations(req.profile, 1);
+    res.json({ consultation: rows[0] ?? null });
+  }),
+);
 
+/**
+ * GET /api/consultations?limit=10
+ * The caller's upcoming schedule. Advisers lean on this the most: it is the list
+ * of sessions they have been booked for.
+ */
+app.get(
+  '/api/consultations',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const requested = Number.parseInt(req.query.limit, 10);
+    const limit = Number.isFinite(requested) ? Math.min(Math.max(requested, 1), 50) : 10;
+
+    res.json({ consultations: await upcomingConsultations(req.profile, limit) });
+  }),
+);
+
+/**
+ * GET /api/advisers
+ * The adviser directory a student picks from when booking. Only finished
+ * registrations appear, so a half-created account cannot be booked with.
+ */
+app.get(
+  '/api/advisers',
+  requireAuth,
+  asyncRoute(async (_req, res) => {
     const { rows } = await pool.query(
-      `select c.id,
-              c.group_name,
-              c.topic,
-              c.location,
-              c.meeting_date,
-              c.status,
-              p.full_name as adviser_name,
-              p.email     as adviser_email
-         from public.consultations c
-         left join public.profiles p on p.id = c.adviser_id
-        where c.status = 'scheduled'
-          and c.meeting_date >= now()
-          and (
-                ($2 = 'adviser' and c.adviser_id = $1)
-             or ($2 <> 'adviser' and (c.group_name = $3 or c.created_by = $1))
-          )
-        order by c.meeting_date asc
-        limit 1`,
-      [id, role, groupName],
+      `select id, full_name, email, department, faculty_position
+         from public.profiles
+        where role = 'adviser'
+          and registration_completed_at is not null
+        order by full_name asc`,
     );
 
-    res.json({ consultation: rows[0] ?? null });
+    res.json({ advisers: rows });
   }),
 );
 
@@ -504,9 +609,22 @@ app.post(
       throw new HttpError(400, 'A valid meeting date and time is required.');
     }
 
-    // An adviser booking for themselves is the default; a student may name an adviser.
+    // An adviser booking for themselves is the default; a student names one.
     const adviserId =
       req.body?.adviser_id ?? (req.profile.role === 'adviser' ? req.profile.id : null);
+
+    if (!adviserId) throw new HttpError(400, 'Choose the adviser for this consultation.');
+    if (!UUID_RE.test(String(adviserId))) throw new HttpError(400, 'That adviser is not valid.');
+
+    const { rows: adviser } = await pool.query(
+      `select 1 from public.profiles
+        where id = $1 and role = 'adviser' and registration_completed_at is not null
+        limit 1`,
+      [adviserId],
+    );
+    if (!adviser.length) {
+      throw new HttpError(400, 'That adviser was not found. Pick one from the list.');
+    }
 
     const { rows } = await pool.query(
       `insert into public.consultations

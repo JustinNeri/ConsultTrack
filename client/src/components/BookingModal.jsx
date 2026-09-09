@@ -7,20 +7,29 @@ import {
   Loader2,
   MapPin,
   UploadCloud,
+  UserRound,
+  Users,
   X,
 } from 'lucide-react';
 import { api } from '../lib/api.js';
 
 const MAX_ATTACHMENTS = 5;
 
-export default function BookingModal({ token, defaultGroupName, onClose, onCreated }) {
+export default function BookingModal({ token, role, defaultGroupName, onClose, onCreated }) {
+  // An adviser books for themselves, so they pick no adviser and the server
+  // fills in their own id.
+  const isAdviser = role === 'adviser';
+
   const [form, setForm] = useState({
     date: '',
     time: '',
     topic: '',
     location: '',
     groupName: defaultGroupName ?? '',
+    adviserId: '',
   });
+  const [advisers, setAdvisers] = useState([]);
+  const [advisersLoading, setAdvisersLoading] = useState(!isAdviser);
   const [files, setFiles] = useState([]);
   const [dragging, setDragging] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -46,6 +55,21 @@ export default function BookingModal({ token, defaultGroupName, onClose, onCreat
       document.body.style.overflow = previousOverflow;
     };
   }, [onClose]);
+
+  /* ------------------------------------------------- adviser directory --- */
+  useEffect(() => {
+    if (isAdviser) return undefined;
+
+    const controller = new AbortController();
+    api('/advisers', { token, signal: controller.signal })
+      .then((result) => setAdvisers(result.advisers ?? []))
+      .catch((err) => {
+        if (err.name !== 'AbortError') setError(err.message);
+      })
+      .finally(() => setAdvisersLoading(false));
+
+    return () => controller.abort();
+  }, [isAdviser, token]);
 
   function updateField(field, value) {
     setForm((prev) => ({ ...prev, [field]: value }));
@@ -90,6 +114,7 @@ export default function BookingModal({ token, defaultGroupName, onClose, onCreat
           location: form.location.trim() || null,
           meeting_date: meetingDate.toISOString(),
           ...(form.groupName.trim() ? { group_name: form.groupName.trim() } : {}),
+          ...(isAdviser ? {} : { adviser_id: form.adviserId }),
         },
       });
       onCreated();
@@ -99,7 +124,13 @@ export default function BookingModal({ token, defaultGroupName, onClose, onCreat
     }
   }
 
-  const canSubmit = form.date && form.time && form.topic.trim() && !submitting;
+  const canSubmit =
+    form.date &&
+    form.time &&
+    form.topic.trim() &&
+    form.groupName.trim() &&
+    (isAdviser || form.adviserId) &&
+    !submitting;
 
   return (
     <div
@@ -123,10 +154,12 @@ export default function BookingModal({ token, defaultGroupName, onClose, onCreat
             </span>
             <div>
               <h2 id="booking-title" className="text-lg font-extrabold tracking-tight text-slate-900">
-                Book a consultation
+                {isAdviser ? 'Schedule a consultation' : 'Book a consultation'}
               </h2>
               <p className="mt-0.5 text-sm text-slate-500">
-                Reserve a slot with your adviser and set the agenda ahead of time.
+                {isAdviser
+                  ? 'Set a session for one of your thesis groups and share the agenda.'
+                  : 'Reserve a slot with your adviser and set the agenda ahead of time.'}
               </p>
             </div>
           </div>
@@ -141,6 +174,51 @@ export default function BookingModal({ token, defaultGroupName, onClose, onCreat
         </div>
 
         <form onSubmit={handleSubmit} className="px-6 py-5" noValidate>
+          {/* ------------------------------------------------------ who/what */}
+          {!isAdviser ? (
+            <Field id="booking-adviser" label="Adviser" icon={UserRound} className="mb-4">
+              <select
+                id="booking-adviser"
+                required
+                disabled={advisersLoading || advisers.length === 0}
+                value={form.adviserId}
+                onChange={(event) => updateField('adviserId', event.target.value)}
+                className={`${inputClass} disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400`}
+              >
+                <option value="">
+                  {advisersLoading
+                    ? 'Loading advisers...'
+                    : advisers.length === 0
+                      ? 'No advisers registered yet'
+                      : 'Select your adviser'}
+                </option>
+                {advisers.map((adviser) => (
+                  <option key={adviser.id} value={adviser.id}>
+                    {adviser.full_name}
+                    {adviser.department ? ` - ${adviser.department}` : ''}
+                  </option>
+                ))}
+              </select>
+              {!advisersLoading && advisers.length === 0 ? (
+                <p className="mt-1.5 text-xs text-slate-400">
+                  Ask your adviser to register with their @hau.edu.ph address first.
+                </p>
+              ) : null}
+            </Field>
+          ) : null}
+
+          <Field id="booking-group" label="Thesis group" icon={Users} className="mb-4">
+            <input
+              id="booking-group"
+              type="text"
+              required
+              value={form.groupName}
+              onChange={(event) => updateField('groupName', event.target.value)}
+              placeholder="Group 7 - ConsultTrack"
+              className={inputClass}
+            />
+          </Field>
+
           {/* ------------------------------------------------- date and time */}
           <div className="grid gap-4 sm:grid-cols-2">
             <Field id="booking-date" label="Date" icon={CalendarDays}>

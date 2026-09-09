@@ -3,6 +3,7 @@ import {
   AlertCircle,
   ArrowRight,
   Bell,
+  Briefcase,
   CalendarDays,
   CalendarPlus,
   CheckCircle2,
@@ -22,6 +23,7 @@ import {
   TrendingUp,
   User,
   UserRound,
+  Users,
   X,
 } from 'lucide-react';
 import BookingModal from './BookingModal.jsx';
@@ -66,9 +68,11 @@ const todayFormatter = new Intl.DateTimeFormat(undefined, {
   day: 'numeric',
   year: 'numeric',
 });
+const monthFormatter = new Intl.DateTimeFormat(undefined, { month: 'short' });
 
 export default function Dashboard({ session, onSignOut }) {
   const [consultation, setConsultation] = useState(null);
+  const [schedule, setSchedule] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -81,6 +85,7 @@ export default function Dashboard({ session, onSignOut }) {
 
   const profile = session.profile ?? {};
   const token = session.access_token;
+  const isAdviser = profile.role === 'adviser';
 
   const loadDashboard = useCallback(
     async ({ silent = false } = {}) => {
@@ -89,12 +94,16 @@ export default function Dashboard({ session, onSignOut }) {
       setError('');
 
       try {
-        const [nextResult, tasksResult] = await Promise.all([
+        // Advisers also get their full upcoming schedule - it is what their
+        // side rail shows in place of the student milestone tracker.
+        const [nextResult, tasksResult, scheduleResult] = await Promise.all([
           api('/consultations/next', { token }),
           api('/tasks/pending', { token }),
+          isAdviser ? api('/consultations?limit=6', { token }) : Promise.resolve(null),
         ]);
         setConsultation(nextResult.consultation);
         setTasks(tasksResult.tasks ?? []);
+        setSchedule(scheduleResult?.consultations ?? []);
       } catch (err) {
         if (err.status === 401) {
           onSignOut();
@@ -106,7 +115,7 @@ export default function Dashboard({ session, onSignOut }) {
         setRefreshing(false);
       }
     },
-    [onSignOut, token],
+    [isAdviser, onSignOut, token],
   );
 
   useEffect(() => {
@@ -166,6 +175,7 @@ export default function Dashboard({ session, onSignOut }) {
       <div className="mx-auto flex min-h-screen w-full max-w-[1600px] overflow-hidden bg-white lg:min-h-[calc(100vh-2rem)] lg:rounded-3xl lg:shadow-lift lg:ring-1 lg:ring-slate-900/5">
         <Sidebar
           view={view}
+          isAdviser={isAdviser}
           onNavigate={goTo}
           onSignOut={onSignOut}
           onBook={() => {
@@ -209,8 +219,10 @@ export default function Dashboard({ session, onSignOut }) {
             {view === 'overview' ? (
               <OverviewView
                 displayName={displayName}
+                isAdviser={isAdviser}
                 loading={loading}
                 consultation={consultation}
+                schedule={schedule}
                 tasks={tasks}
                 busyTaskId={busyTaskId}
                 onResolve={resolveTask}
@@ -241,6 +253,7 @@ export default function Dashboard({ session, onSignOut }) {
       {bookingOpen ? (
         <BookingModal
           token={token}
+          role={profile.role}
           defaultGroupName={profile.group_name}
           onClose={() => setBookingOpen(false)}
           onCreated={() => {
@@ -255,7 +268,7 @@ export default function Dashboard({ session, onSignOut }) {
 
 /* ---------------------------------------------------------------- sidebar -- */
 
-function Sidebar({ view, onNavigate, onSignOut, onBook, open, onClose }) {
+function Sidebar({ view, isAdviser, onNavigate, onSignOut, onBook, open, onClose }) {
   return (
     <>
       {/* Mobile backdrop. */}
@@ -319,9 +332,13 @@ function Sidebar({ view, onNavigate, onSignOut, onBook, open, onClose }) {
 
           <div className="mt-6 rounded-2xl bg-white/10 p-4 ring-1 ring-white/15">
             <Sparkles className="h-5 w-5 text-amber-300" aria-hidden="true" />
-            <p className="mt-2.5 text-sm font-bold text-white">Need your adviser?</p>
+            <p className="mt-2.5 text-sm font-bold text-white">
+              {isAdviser ? 'Set a session' : 'Need your adviser?'}
+            </p>
             <p className="mt-1 text-xs leading-relaxed text-brand-100/80">
-              Book a consultation slot and keep the capstone moving.
+              {isAdviser
+                ? 'Schedule a consultation with one of your thesis groups.'
+                : 'Book a consultation slot and keep the capstone moving.'}
             </p>
             <button
               type="button"
@@ -329,7 +346,7 @@ function Sidebar({ view, onNavigate, onSignOut, onBook, open, onClose }) {
               className="mt-3.5 flex w-full items-center justify-center gap-1.5 rounded-xl bg-white px-3 py-2.5 text-xs font-bold text-brand-800 transition hover:bg-brand-50"
             >
               <CalendarPlus className="h-4 w-4" aria-hidden="true" />
-              Book now
+              {isAdviser ? 'Schedule' : 'Book now'}
             </button>
           </div>
         </nav>
@@ -350,7 +367,11 @@ function Sidebar({ view, onNavigate, onSignOut, onBook, open, onClose }) {
 /* ----------------------------------------------------------------- topbar -- */
 
 function TopBar({ profile, query, onSearch, taskCount, refreshing, onRefresh, onBell, onOpenNav }) {
-  const subtitle = [profile.year_level, profile.course || profile.department]
+  const subtitle = (
+    profile.role === 'adviser'
+      ? [profile.faculty_position || 'Adviser', profile.department]
+      : [profile.year_level, profile.course || profile.department]
+  )
     .filter(Boolean)
     .join(' - ');
 
@@ -446,8 +467,10 @@ function Avatar({ name, size = 'md' }) {
 
 function OverviewView({
   displayName,
+  isAdviser,
   loading,
   consultation,
+  schedule,
   tasks,
   busyTaskId,
   onResolve,
@@ -469,9 +492,13 @@ function OverviewView({
           ? 'Tomorrow'
           : `In ${daysAway} days`;
 
+  // Only groups with a session on the books can be counted - nothing else in the
+  // data says who an adviser advises.
+  const bookedGroups = new Set(schedule.map((item) => item.group_name).filter(Boolean)).size;
+
   return (
     <div className="space-y-6">
-      <HeroBanner displayName={displayName} onBook={onBook} />
+      <HeroBanner displayName={displayName} isAdviser={isAdviser} onBook={onBook} />
 
       {/* ------------------------------------------------------- stat tiles */}
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -486,7 +513,13 @@ function OverviewView({
               tone="indigo"
               label="Next consultation"
               value={countdown}
-              hint={meetingDate ? dateFormatter.format(meetingDate) : 'Book a slot with your adviser'}
+              hint={
+                meetingDate
+                  ? dateFormatter.format(meetingDate)
+                  : isAdviser
+                    ? 'Nothing booked with you yet'
+                    : 'Book a slot with your adviser'
+              }
               highlighted
             />
             <StatTile
@@ -494,15 +527,31 @@ function OverviewView({
               tone="amber"
               label="Open action items"
               value={String(tasks.length)}
-              hint={tasks.length === 0 ? 'Everything is resolved' : 'Waiting on your group'}
+              hint={
+                tasks.length === 0
+                  ? 'Everything is resolved'
+                  : isAdviser
+                    ? 'Across your groups'
+                    : 'Waiting on your group'
+              }
             />
-            <StatTile
-              icon={TrendingUp}
-              tone="emerald"
-              label="Capstone progress"
-              value={`${progress}%`}
-              hint={`Next up: ${nextMilestone}`}
-            />
+            {isAdviser ? (
+              <StatTile
+                icon={Users}
+                tone="emerald"
+                label="Groups booked"
+                value={String(bookedGroups)}
+                hint={`${schedule.length} upcoming ${schedule.length === 1 ? 'session' : 'sessions'}`}
+              />
+            ) : (
+              <StatTile
+                icon={TrendingUp}
+                tone="emerald"
+                label="Capstone progress"
+                value={`${progress}%`}
+                hint={`Next up: ${nextMilestone}`}
+              />
+            )}
           </>
         )}
       </div>
@@ -515,7 +564,12 @@ function OverviewView({
             {loading ? (
               <div className="h-52 animate-pulse rounded-2xl bg-slate-200/70" />
             ) : (
-              <ConsultationCard consultation={consultation} countdown={countdown} onBook={onBook} />
+              <ConsultationCard
+                consultation={consultation}
+                countdown={countdown}
+                isAdviser={isAdviser}
+                onBook={onBook}
+              />
             )}
           </section>
 
@@ -559,15 +613,21 @@ function OverviewView({
         </div>
 
         <div className="space-y-6">
-          <MilestonePanel progress={progress} />
-          <AdviserPanel consultation={consultation} loading={loading} />
+          {isAdviser ? (
+            <SchedulePanel schedule={schedule} loading={loading} onBook={onBook} />
+          ) : (
+            <>
+              <MilestonePanel progress={progress} />
+              <AdviserPanel consultation={consultation} loading={loading} />
+            </>
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-function HeroBanner({ displayName, onBook }) {
+function HeroBanner({ displayName, isAdviser, onBook }) {
   return (
     <section className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-brand-700 via-brand-800 to-brand-950 px-6 py-8 sm:px-9 sm:py-10">
       <div
@@ -588,7 +648,9 @@ function HeroBanner({ displayName, onBook }) {
             Welcome back, {displayName}!
           </h1>
           <p className="mt-2.5 text-sm leading-relaxed text-brand-100/85">
-            Here is where your capstone stands today - sessions, advisers and everything still open.
+            {isAdviser
+              ? 'Your consultation schedule and every action item still open across your groups.'
+              : 'Here is where your capstone stands today - sessions, advisers and everything still open.'}
           </p>
           <button
             type="button"
@@ -596,7 +658,7 @@ function HeroBanner({ displayName, onBook }) {
             className="mt-6 inline-flex items-center gap-2 rounded-xl bg-white px-5 py-3 text-sm font-bold text-brand-800 shadow-lg shadow-brand-950/25 transition hover:bg-brand-50 active:scale-[0.99]"
           >
             <CalendarPlus className="h-4 w-4" aria-hidden="true" />
-            Book consultation
+            {isAdviser ? 'Schedule a session' : 'Book consultation'}
           </button>
         </div>
 
@@ -655,7 +717,7 @@ function SectionHeading({ title, action }) {
 
 /* ----------------------------------------------------- consultation card -- */
 
-function ConsultationCard({ consultation, countdown, onBook }) {
+function ConsultationCard({ consultation, countdown, isAdviser, onBook }) {
   if (!consultation) {
     return (
       <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-12 text-center shadow-card">
@@ -664,7 +726,9 @@ function ConsultationCard({ consultation, countdown, onBook }) {
         </span>
         <p className="mt-4 font-bold text-slate-900">No upcoming consultation</p>
         <p className="mt-1 text-sm text-slate-500">
-          Book a session with your adviser to keep the thesis moving.
+          {isAdviser
+            ? 'Nothing is booked with you yet. You can schedule a session yourself.'
+            : 'Book a session with your adviser to keep the thesis moving.'}
         </p>
         <button
           type="button"
@@ -672,7 +736,7 @@ function ConsultationCard({ consultation, countdown, onBook }) {
           className="mt-5 inline-flex items-center gap-2 rounded-xl bg-brand-700 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-brand-800"
         >
           <CalendarPlus className="h-4 w-4" aria-hidden="true" />
-          Book consultation
+          {isAdviser ? 'Schedule a session' : 'Book consultation'}
         </button>
       </div>
     );
@@ -790,6 +854,54 @@ function MilestonePanel({ progress }) {
           );
         })}
       </ol>
+    </section>
+  );
+}
+
+function SchedulePanel({ schedule, loading, onBook }) {
+  if (loading) return <div className="h-64 animate-pulse rounded-2xl bg-slate-200/70" />;
+
+  return (
+    <section className="rounded-2xl bg-white p-6 shadow-card ring-1 ring-slate-100">
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-base font-extrabold tracking-tight text-slate-900">Your schedule</h2>
+        <button
+          type="button"
+          onClick={onBook}
+          className="rounded-lg text-sm font-bold text-brand-700 hover:underline"
+        >
+          Add
+        </button>
+      </div>
+
+      {schedule.length === 0 ? (
+        <p className="mt-4 text-sm text-slate-500">
+          No sessions booked with you yet. Students pick you from the adviser list when they book.
+        </p>
+      ) : (
+        <ol className="mt-4 space-y-3">
+          {schedule.map((item) => {
+            const when = new Date(item.meeting_date);
+            return (
+              <li key={item.id} className="flex gap-3">
+                <div className="flex h-12 w-12 shrink-0 flex-col items-center justify-center rounded-xl bg-brand-50 leading-none">
+                  <span className="text-[10px] font-bold uppercase text-brand-600">
+                    {monthFormatter.format(when)}
+                  </span>
+                  <span className="text-base font-extrabold text-brand-800">{when.getDate()}</span>
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-bold text-slate-900">{item.topic}</p>
+                  <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-slate-500">
+                    <span className="font-semibold">{timeFormatter.format(when)}</span>
+                    {item.group_name ? <span className="truncate">{item.group_name}</span> : null}
+                  </p>
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+      )}
     </section>
   );
 }
@@ -959,6 +1071,8 @@ function ProfileView({ profile, onSignOut }) {
     ['Full name', profile.full_name],
     ['Email', profile.email],
     ['Student ID', profile.student_id],
+    ['Faculty ID', profile.employee_id],
+    ['Position', profile.faculty_position],
     ['Department', profile.department],
     ['Course', profile.course],
     ['Year level', profile.year_level],
@@ -979,16 +1093,30 @@ function ProfileView({ profile, onSignOut }) {
               {profile.full_name || profile.email}
             </p>
             <p className="truncate text-sm text-brand-100/85">
-              {[profile.year_level, profile.course].filter(Boolean).join(' - ') ||
-                (profile.role ?? 'student')}
+              {(profile.role === 'adviser'
+                ? [profile.faculty_position || 'Adviser', profile.department]
+                : [profile.year_level, profile.course]
+              )
+                .filter(Boolean)
+                .join(' - ') || (profile.role ?? 'student')}
             </p>
           </div>
-          {profile.email_verified_at ? (
-            <span className="ml-auto flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1.5 text-xs font-bold text-white ring-1 ring-white/25">
-              <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
-              Email verified
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <span className="flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1.5 text-xs font-bold text-white ring-1 ring-white/25">
+              {profile.role === 'adviser' ? (
+                <Briefcase className="h-3.5 w-3.5" aria-hidden="true" />
+              ) : (
+                <GraduationCap className="h-3.5 w-3.5" aria-hidden="true" />
+              )}
+              {profile.role === 'adviser' ? 'Adviser' : 'Student'}
             </span>
-          ) : null}
+            {profile.email_verified_at ? (
+              <span className="flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1.5 text-xs font-bold text-white ring-1 ring-white/25">
+                <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+                Email verified
+              </span>
+            ) : null}
+          </div>
         </div>
 
         <dl className="divide-y divide-slate-100">
