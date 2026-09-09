@@ -769,7 +769,7 @@ const HIGHLIGHTS = [
  */
 function BrandPanel({ view }) {
   return (
-    <div className="relative hidden bg-ink-950 p-10 lg:flex lg:flex-col">
+    <div className="relative hidden bg-gradient-to-b from-brand-900 to-brand-950 p-10 lg:flex lg:flex-col">
       <div className="flex items-center gap-2.5">
         <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-700">
           <GraduationCap className="h-5 w-5 text-white" aria-hidden="true" />
@@ -778,7 +778,7 @@ function BrandPanel({ view }) {
           <span className="block text-[15px] font-semibold tracking-tight text-white">
             ConsultTrack
           </span>
-          <span className="block text-[11px] text-ink-400">Holy Angel University</span>
+          <span className="block text-[11px] text-brand-200/80">Holy Angel University</span>
         </span>
       </div>
 
@@ -797,7 +797,7 @@ function BrandPanel({ view }) {
           </>
         )}
       </h2>
-      <p className="mt-4 max-w-sm text-[13px] leading-relaxed text-ink-400">
+      <p className="mt-4 max-w-sm text-[13px] leading-relaxed text-brand-100/75">
         Consultation scheduling built for HAU thesis groups &mdash; one place for sessions,
         advisers and the tasks that come out of them.
       </p>
@@ -809,18 +809,18 @@ function BrandPanel({ view }) {
             style={{ '--delay': `${140 + index * 80}ms` }}
             className="animate-rise flex gap-3.5"
           >
-            <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/[0.07] text-brand-400 ring-1 ring-white/[0.08]">
+            <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/10 text-brand-200 ring-1 ring-white/15">
               <Icon className="h-4 w-4" aria-hidden="true" />
             </span>
             <div className="min-w-0">
               <p className="text-[13px] font-semibold text-white">{title}</p>
-              <p className="mt-1 text-[12px] leading-relaxed text-ink-400">{body}</p>
+              <p className="mt-1 text-[12px] leading-relaxed text-brand-100/70">{body}</p>
             </div>
           </li>
         ))}
       </ul>
 
-      <p className="mt-auto border-t border-white/[0.08] pt-6 text-[11px] text-ink-500">
+      <p className="mt-auto border-t border-white/[0.12] pt-6 text-[11px] text-brand-200/60">
         Built for the Holy Angel University capstone program.
       </p>
     </div>

@@ -9,7 +9,7 @@ import {
   CalendarPlus,
   Check,
   CheckCircle2,
-  ChevronRight,
+  ChevronDown,
   FileText,
   Circle,
   Clock,
@@ -20,11 +20,13 @@ import {
   LayoutDashboard,
   ClipboardList,
   ListChecks,
+  Lightbulb,
   Loader2,
   LogOut,
   Mail,
   MapPin,
   MessageSquare,
+  MessagesSquare,
   Menu,
   RefreshCw,
   Search,
@@ -42,6 +44,21 @@ import HistoryView from './HistoryView.jsx';
 import RecordView from './RecordView.jsx';
 import ProposeTimeModal from './ProposeTimeModal.jsx';
 import { api } from '../lib/api.js';
+import { toDateInput, upcomingDatesFor } from '../lib/schedule.js';
+
+/** "2h ago", "3d ago", then a date once it stops being recent. */
+function relativeTime(value) {
+  const then = new Date(value);
+  if (Number.isNaN(then.getTime())) return '';
+  const minutes = Math.round((Date.now() - then.getTime()) / 60_000);
+  if (minutes < 1) return 'now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return shortDateFormatter.format(then);
+}
 
 /**
  * Capstone milestones are a program-level checklist rather than table data, so
@@ -56,25 +73,44 @@ const MILESTONES = [
 ];
 const COMPLETED_MILESTONES = 3;
 
-/** The sidebar only lists views this app can actually render. */
-function navItems(isAdviser) {
+/**
+ * The sidebar only lists views this app can actually render, grouped the way
+ * the design groups them: what you do daily, what you hand in, and your account.
+ */
+function navSections(isAdviser) {
   return [
-    { key: 'overview', label: 'Dashboard', icon: LayoutDashboard },
-    // An adviser answers requests; a student watches their own.
-    { key: 'requests', label: isAdviser ? 'Requests' : 'My requests', icon: Inbox, badge: true },
-    // Only an adviser has hours to publish; a student books out of them.
-    ...(isAdviser
-      ? [{ key: 'availability', label: 'Consultation hours', icon: CalendarClock }]
-      : []),
-    { key: 'tasks', label: 'Action items', icon: ListChecks },
-    // Where a session goes once it has happened, and where an adviser finishes
-    // wrapping one up.
-    { key: 'history', label: 'Past sessions', icon: History },
-    // The printable log a group hands in. Everything on it is already in the
-    // database; this is the only way it gets out.
-    { key: 'record', label: 'Consultation record', icon: FileText },
-    { key: 'profile', label: 'My profile', icon: UserRound },
+    {
+      label: 'Main',
+      items: [
+        { key: 'overview', label: 'Dashboard', icon: LayoutDashboard },
+        // An adviser answers requests; a student watches their own.
+        { key: 'requests', label: isAdviser ? 'Requests' : 'My requests', icon: Inbox, badge: 'requests' },
+        { key: 'tasks', label: 'Action items', icon: ListChecks, badge: 'tasks' },
+        // Only an adviser has hours to publish; a student books out of them.
+        ...(isAdviser
+          ? [{ key: 'availability', label: 'Consultation hours', icon: CalendarClock }]
+          : []),
+        // Where a session goes once it has happened, and where an adviser
+        // finishes wrapping one up.
+        { key: 'history', label: 'Past sessions', icon: History },
+      ],
+    },
+    {
+      label: 'Records',
+      // The printable log a group hands in. Everything on it is already in the
+      // database; this is the only way it gets out.
+      items: [{ key: 'record', label: 'Consultation record', icon: FileText }],
+    },
+    {
+      label: 'Account',
+      items: [{ key: 'profile', label: 'My profile', icon: UserRound }],
+    },
   ];
+}
+
+/** Flat list, for anything that just needs to look a view up by key. */
+function navItems(isAdviser) {
+  return navSections(isAdviser).flatMap((section) => section.items);
 }
 
 const dateFormatter = new Intl.DateTimeFormat(undefined, {
@@ -97,6 +133,13 @@ const todayFormatter = new Intl.DateTimeFormat(undefined, {
   year: 'numeric',
 });
 const monthFormatter = new Intl.DateTimeFormat(undefined, { month: 'short' });
+const weekdayFormatter = new Intl.DateTimeFormat(undefined, { weekday: 'long' });
+// The slot chips: "Thu, Sep 11".
+const slotDayFormatter = new Intl.DateTimeFormat(undefined, {
+  weekday: 'short',
+  month: 'short',
+  day: 'numeric',
+});
 // For the three-across detail strip, where the long form overflows.
 const detailDateFormatter = new Intl.DateTimeFormat(undefined, {
   weekday: 'short',
@@ -128,6 +171,13 @@ export default function Dashboard({ session, onSignOut }) {
   // The consultation whose time is being renegotiated.
   const [proposeFor, setProposeFor] = useState(null);
   const [unread, setUnread] = useState({ total: 0, threads: [] });
+  // Sessions already held, which is what the activity feed is built out of.
+  const [history, setHistory] = useState([]);
+  // The department adviser directory, and the open slots of whichever of them
+  // is this group's adviser.
+  const [directory, setDirectory] = useState([]);
+  const [slots, setSlots] = useState([]);
+  const [slotsLoading, setSlotsLoading] = useState(false);
   // Bumped to make the history view re-read itself after a wrap-up.
   const [historyKey, setHistoryKey] = useState(0);
   const [view, setView] = useState('overview');
@@ -156,19 +206,33 @@ export default function Dashboard({ session, onSignOut }) {
       try {
         // Advisers also get their full upcoming schedule - it is what their
         // side rail shows in place of the student milestone tracker.
-        const [nextResult, tasksResult, requestsResult, scheduleResult, hoursResult] =
-          await Promise.all([
-            api('/consultations/next', { token }),
-            api('/tasks/pending', { token }),
-            api('/consultations/requests', { token }),
-            isAdviser ? api('/consultations?limit=6', { token }) : Promise.resolve(null),
-            isAdviser ? api('/availability', { token }) : Promise.resolve(null),
-          ]);
+        const [
+          nextResult,
+          tasksResult,
+          requestsResult,
+          scheduleResult,
+          hoursResult,
+          historyResult,
+          advisersResult,
+        ] = await Promise.all([
+          api('/consultations/next', { token }),
+          api('/tasks/pending', { token }),
+          api('/consultations/requests', { token }),
+          isAdviser ? api('/consultations?limit=6', { token }) : Promise.resolve(null),
+          isAdviser ? api('/availability', { token }) : Promise.resolve(null),
+          // Recent sessions feed the activity list on both sides.
+          api('/consultations/history?limit=6', { token }).catch(() => null),
+          // Only a student needs the directory: it is where the adviser's
+          // faculty position and department come from.
+          isAdviser ? Promise.resolve(null) : api('/advisers', { token }).catch(() => null),
+        ]);
         setConsultation(nextResult.consultation);
         setTasks(tasksResult.tasks ?? []);
         setRequests(requestsResult.requests ?? []);
         setSchedule(scheduleResult?.consultations ?? []);
         setHourBlocks(hoursResult ? (hoursResult.availability ?? []).length : null);
+        setHistory(historyResult?.consultations ?? []);
+        setDirectory(advisersResult?.advisers ?? []);
         refreshUnread();
       } catch (err) {
         if (err.status === 401) {
@@ -346,6 +410,161 @@ export default function Dashboard({ session, onSignOut }) {
     [unread.threads],
   );
 
+  /**
+   * Who this group's adviser is. A student is not assigned one in the schema --
+   * they pick when booking -- so the adviser is whoever their live consultation
+   * is with, else whoever ran the last session, else the only adviser in their
+   * department. Anything less certain than that resolves to null, and the card
+   * says so rather than guessing.
+   */
+  const adviserRecord = useMemo(() => {
+    if (isAdviser) return null;
+    const email =
+      consultation?.adviser_email ??
+      history.find((item) => item.adviser_email)?.adviser_email ??
+      null;
+
+    if (email) {
+      const match = directory.find((item) => item.email === email);
+      if (match) return match;
+      // Known from the consultation but missing from the directory (a different
+      // department, or a directory call that failed). Name and email are still
+      // real; the rest of the card degrades.
+      return {
+        id: null,
+        full_name: consultation?.adviser_name ?? history.find((i) => i.adviser_email === email)?.adviser_name ?? null,
+        email,
+      };
+    }
+    return directory.length === 1 ? directory[0] : null;
+  }, [consultation, directory, history, isAdviser]);
+
+  const adviserId = adviserRecord?.id ?? null;
+
+  /*
+   * The adviser's next open slots. `weekdays` comes back on every slot call, so
+   * one probe tells us which days are worth asking about and the loop stops as
+   * soon as it has four -- usually two or three requests, not fourteen.
+   */
+  useEffect(() => {
+    if (isAdviser || !adviserId) {
+      setSlots([]);
+      return undefined;
+    }
+    const controller = new AbortController();
+    setSlotsLoading(true);
+
+    (async () => {
+      try {
+        const today = toDateInput(new Date());
+        const probe = await api(`/advisers/${adviserId}/slots?date=${today}`, {
+          token,
+          signal: controller.signal,
+        });
+        const weekdays = probe.weekdays ?? [];
+        if (weekdays.length === 0) {
+          setSlots([]);
+          return;
+        }
+
+        const open = [];
+        const now = Date.now();
+        // upcomingDatesFor yields Date objects; the endpoint wants YYYY-MM-DD.
+        for (const cursor of upcomingDatesFor(weekdays, 6)) {
+          if (open.length >= 4) break;
+          const date = toDateInput(cursor);
+          const day =
+            date === today
+              ? probe
+              : await api(`/advisers/${adviserId}/slots?date=${date}`, {
+                  token,
+                  signal: controller.signal,
+                });
+          for (const slot of day.slots ?? []) {
+            if (slot.taken || new Date(slot.start).getTime() <= now) continue;
+            open.push(slot);
+            if (open.length >= 4) break;
+          }
+        }
+        setSlots(open);
+      } catch (err) {
+        // A directory or slot failure must not take the dashboard down with it.
+        if (err.name !== 'AbortError') setSlots([]);
+      } finally {
+        setSlotsLoading(false);
+      }
+    })();
+
+    return () => controller.abort();
+  }, [adviserId, isAdviser, token]);
+
+  const adviser = useMemo(
+    () => (adviserRecord ? { ...adviserRecord, availableFrom: slots[0]?.start ?? null } : null),
+    [adviserRecord, slots],
+  );
+
+  /*
+   * The activity feed. There is no activity table, so every row is derived from
+   * a record the API already returned: a request raised or answered, a session
+   * wrapped up, a thread with something unread. Nothing here is synthesised.
+   */
+  const activity = useMemo(() => {
+    const rows = [];
+
+    for (const request of requests) {
+      if (request.responded_at && request.status === 'declined') {
+        rows.push({
+          id: `declined-${request.id}`,
+          at: request.responded_at,
+          icon: X,
+          tone: 'bg-rose-50 text-rose-600',
+          title: 'Consultation declined',
+          detail: request.topic,
+        });
+      } else if (request.created_at) {
+        rows.push({
+          id: `requested-${request.id}`,
+          at: request.created_at,
+          icon: CalendarPlus,
+          tone: 'bg-info-50 text-info-600',
+          title: isAdviser ? 'New consultation request' : 'Consultation request submitted',
+          detail: request.topic,
+        });
+      }
+    }
+
+    for (const session of history) {
+      if (session.completed_at) {
+        rows.push({
+          id: `completed-${session.id}`,
+          at: session.completed_at,
+          icon: ClipboardList,
+          tone: 'bg-emerald-50 text-emerald-600',
+          title: 'Session wrapped up',
+          detail: session.topic,
+        });
+      }
+    }
+
+    rows.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
+
+    // Unread threads carry no timestamp of their own, so they sit at the top as
+    // a state rather than an event, and show no relative time.
+    const unreadRows = unread.threads.slice(0, 2).map((thread) => ({
+      id: `unread-${thread.consultation_id}`,
+      icon: MessagesSquare,
+      tone: 'bg-brand-50 text-brand-700',
+      title: `${thread.unread} unread ${thread.unread === 1 ? 'message' : 'messages'}`,
+      detail: thread.topic,
+      when: '',
+    }));
+
+    return [...unreadRows, ...rows.map((row) => ({ ...row, when: relativeTime(row.at) }))].slice(
+      0,
+      5,
+    );
+  }, [history, isAdviser, requests, unread.threads]);
+
   const progress = Math.round((COMPLETED_MILESTONES / MILESTONES.length) * 100);
   const nextMilestone = MILESTONES[COMPLETED_MILESTONES] ?? 'All milestones complete';
   const firstName = profile.first_name || (profile.full_name || '').split(',').pop()?.trim();
@@ -358,6 +577,7 @@ export default function Dashboard({ session, onSignOut }) {
           view={view}
           isAdviser={isAdviser}
           requestCount={noticeCount}
+          taskCount={tasks.length}
           onNavigate={goTo}
           onSignOut={onSignOut}
           onBook={() => {
@@ -381,6 +601,8 @@ export default function Dashboard({ session, onSignOut }) {
             onBell={() => goTo('requests')}
             onOpenNav={() => setNavOpen(true)}
             unreadTotal={unread.total}
+            onNavigate={goTo}
+            onSignOut={onSignOut}
             // The busiest thread is the one worth opening first; the list is
             // already ordered by unread count.
             onOpenMessages={() => {
@@ -390,7 +612,7 @@ export default function Dashboard({ session, onSignOut }) {
             }}
           />
 
-          <main className="app-main scrollbar-slim flex-1 overflow-y-auto bg-canvas px-4 py-6 sm:px-7 sm:py-8">
+          <main className="app-main scrollbar-slim flex-1 overflow-y-auto bg-canvas px-4 pb-24 pt-6 sm:px-7 sm:py-8 lg:pb-8">
             {error ? (
               <div
                 role="alert"
@@ -453,6 +675,11 @@ export default function Dashboard({ session, onSignOut }) {
                 onDecideProposal={decideProposal}
                 onPropose={setProposeFor}
                 onCancel={cancelConsultation}
+                adviser={adviser}
+                slots={slots}
+                slotsLoading={slotsLoading}
+                activity={activity}
+                onSeeAllHistory={() => goTo('history')}
               />
             ) : null}
 
@@ -510,6 +737,15 @@ export default function Dashboard({ session, onSignOut }) {
 
             {view === 'profile' ? <ProfileView profile={profile} onSignOut={onSignOut} /> : null}
           </main>
+
+          <MobileTabBar
+            view={view}
+            isAdviser={isAdviser}
+            requestCount={noticeCount}
+            taskCount={tasks.length}
+            onNavigate={goTo}
+            onBook={() => setBookingOpen(true)}
+          />
         </div>
       </div>
 
@@ -588,7 +824,9 @@ export default function Dashboard({ session, onSignOut }) {
 
 /* ---------------------------------------------------------------- sidebar -- */
 
-function Sidebar({ view, isAdviser, requestCount, onNavigate, onSignOut, onBook, open, onClose }) {
+function Sidebar({ view, isAdviser, requestCount, taskCount, onNavigate, onSignOut, onBook, open, onClose }) {
+  const counts = { requests: requestCount, tasks: taskCount };
+
   return (
     <>
       {/* Mobile backdrop. */}
@@ -601,108 +839,210 @@ function Sidebar({ view, isAdviser, requestCount, onNavigate, onSignOut, onBook,
         />
       ) : null}
 
-      {/*
-        Near-black rather than crimson. A dark neutral rail lets the one
-        institutional colour do its job -- it marks the current view and the
-        primary action, instead of competing with itself across the whole panel.
-      */}
       <aside
-        className={`no-print fixed inset-y-0 left-0 z-50 flex w-[17rem] flex-col bg-ink-950 px-3 py-4 transition-transform duration-200 ease-out lg:static lg:z-auto lg:w-[15.5rem] lg:translate-x-0 ${
+        className={`no-print fixed inset-y-0 left-0 z-50 flex w-[17rem] flex-col bg-gradient-to-b from-brand-900 to-brand-950 px-3 py-4 transition-transform duration-200 ease-out lg:static lg:z-auto lg:w-[15.5rem] lg:translate-x-0 ${
           open ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
         <div className="flex items-center justify-between px-2">
           <div className="flex items-center gap-2.5">
-            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-700 shadow-sm">
-              <GraduationCap className="h-[18px] w-[18px] text-white" aria-hidden="true" />
+            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-brand-700">
+              <GraduationCap className="h-5 w-5 text-white" aria-hidden="true" />
             </span>
             <span className="leading-tight">
-              <span className="block text-[15px] font-semibold tracking-tight text-white">
+              <span className="block text-h3 font-semibold tracking-tight text-white">
                 ConsultTrack
               </span>
-              <span className="block text-[11px] text-ink-400">Holy Angel University</span>
+              <span className="block text-small text-brand-200/80">Holy Angel University</span>
             </span>
           </div>
           <button
             type="button"
             onClick={onClose}
             aria-label="Close navigation"
-            className="rounded-md p-1.5 text-ink-400 transition hover:bg-white/10 hover:text-white lg:hidden"
+            className="rounded-md p-1.5 text-brand-200 transition hover:bg-white/10 hover:text-white lg:hidden"
           >
             <X className="h-4.5 w-4.5" aria-hidden="true" />
           </button>
         </div>
 
         {/*
-          The primary action sits above the nav, not inside a promo card at the
-          bottom of it: booking is the thing people came to do, so it should be
-          the first thing under the wordmark.
+          The primary action sits above the nav: booking is the thing people
+          came to do, so it should be the first thing under the wordmark.
         */}
         <button
           type="button"
           onClick={onBook}
-          className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-brand-700 px-3 py-2.5 text-[13px] font-semibold text-white transition hover:bg-brand-600 active:bg-brand-800"
+          className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-brand-700 px-3 py-2.5 text-body font-semibold text-white ring-1 ring-white/10 transition hover:bg-brand-600 active:bg-brand-800"
         >
           <CalendarPlus className="h-4 w-4" aria-hidden="true" />
           {isAdviser ? 'Schedule session' : 'Book consultation'}
         </button>
 
-        <nav className="mt-7 flex flex-1 flex-col gap-0.5">
-          <p className="mb-1.5 px-2 text-[11px] font-medium tracking-wide text-ink-500">Menu</p>
-          {navItems(isAdviser).map(({ key, label, icon: Icon, badge }) => {
-            const active = view === key;
-            const count = badge ? requestCount : 0;
-            return (
-              <button
-                key={key}
-                type="button"
-                onClick={() => onNavigate(key)}
-                aria-current={active ? 'page' : undefined}
-                className={`group relative flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] transition ${
-                  active
-                    ? 'bg-white/[0.08] font-semibold text-white'
-                    : 'font-medium text-ink-400 hover:bg-white/[0.05] hover:text-ink-100'
-                }`}
-              >
-                {/* A crimson rule on the active item, readable from the corner
-                    of the eye without adding a second filled surface. */}
-                <span
-                  aria-hidden="true"
-                  className={`absolute left-0 top-1/2 h-4.5 w-[3px] -translate-y-1/2 rounded-r-full bg-brand-500 transition-opacity ${
-                    active ? 'opacity-100' : 'opacity-0'
-                  }`}
-                />
-                <Icon
-                  className={`h-4 w-4 shrink-0 ${active ? 'text-brand-400' : 'text-ink-500 group-hover:text-ink-300'}`}
-                  aria-hidden="true"
-                />
-                <span className="truncate">{label}</span>
-                {count > 0 ? (
-                  <span
-                    className={`tnum ml-auto flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-1.5 text-[10px] font-semibold ${
-                      active ? 'bg-brand-600 text-white' : 'bg-brand-600/90 text-white'
-                    }`}
-                  >
-                    {count > 9 ? '9+' : count}
-                  </span>
-                ) : null}
-              </button>
-            );
-          })}
+        <nav className="scrollbar-slim mt-6 flex flex-1 flex-col gap-5 overflow-y-auto">
+          {navSections(isAdviser).map((section) => (
+            <div key={section.label}>
+              <p className="mb-1.5 px-2.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-brand-300/60">
+                {section.label}
+              </p>
+              <div className="flex flex-col gap-0.5">
+                {section.items.map(({ key, label, icon: Icon, badge }) => {
+                  const active = view === key;
+                  const count = badge ? (counts[badge] ?? 0) : 0;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => onNavigate(key)}
+                      aria-current={active ? 'page' : undefined}
+                      className={`group flex items-center gap-2.5 rounded-xl px-2.5 py-2 text-body transition ${
+                        active
+                          ? 'bg-brand-700 font-semibold text-white'
+                          : 'font-medium text-brand-100/70 hover:bg-white/[0.07] hover:text-white'
+                      }`}
+                    >
+                      <Icon
+                        className={`h-4 w-4 shrink-0 ${active ? 'text-white' : 'text-brand-200/60 group-hover:text-brand-100'}`}
+                        aria-hidden="true"
+                      />
+                      <span className="truncate">{label}</span>
+                      {count > 0 ? (
+                        <span
+                          className={`tnum ml-auto flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-1.5 text-[10px] font-semibold ${
+                            active ? 'bg-white/20 text-white' : 'bg-brand-600 text-white'
+                          }`}
+                        >
+                          {count > 9 ? '9+' : count}
+                        </span>
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </nav>
 
-        <div className="mt-4 border-t border-white/[0.08] pt-3">
-          <button
-            type="button"
-            onClick={onSignOut}
-            className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium text-ink-400 transition hover:bg-white/[0.05] hover:text-ink-100"
-          >
-            <LogOut className="h-4 w-4 shrink-0 text-ink-500" aria-hidden="true" />
-            Sign out
-          </button>
+        {/* The institution the app belongs to, and its motto. */}
+        <div className="mt-4 flex items-center gap-2.5 border-t border-white/[0.08] px-2.5 pt-4">
+          <HauCrest />
+          <span className="min-w-0 leading-tight">
+            <span className="block truncate text-small font-medium text-brand-100/80">
+              Holy Angel University
+            </span>
+            <span className="block truncate text-[10px] text-brand-300/60">
+              Veritas &middot; Fortitudo &middot; Caritas
+            </span>
+          </span>
         </div>
+
+        {/* Sign out also lives in the account menu; on a phone that menu is a
+            reach away, so the rail keeps its own. */}
+        <button
+          type="button"
+          onClick={onSignOut}
+          className="mt-3 flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-body font-medium text-brand-100/70 transition hover:bg-white/[0.07] hover:text-white lg:hidden"
+        >
+          <LogOut className="h-4 w-4 shrink-0" aria-hidden="true" />
+          Sign out
+        </button>
       </aside>
     </>
+  );
+}
+
+/**
+ * The phone navigation. The sidebar is a drawer on small screens, which is one
+ * tap too many for the four places people actually move between, so those get a
+ * permanent bar and booking gets the raised button in the middle of it.
+ */
+function MobileTabBar({ view, isAdviser, requestCount, taskCount, onNavigate, onBook }) {
+  const tabs = [
+    { key: 'overview', label: 'Home', icon: LayoutDashboard, count: 0 },
+    {
+      key: 'requests',
+      label: isAdviser ? 'Requests' : 'Requests',
+      icon: Inbox,
+      count: requestCount,
+    },
+    { key: 'tasks', label: 'Tasks', icon: ListChecks, count: taskCount },
+    { key: 'profile', label: 'Profile', icon: UserRound, count: 0 },
+  ];
+
+  return (
+    <nav
+      aria-label="Main"
+      className="no-print fixed inset-x-0 bottom-0 z-30 flex items-stretch border-t border-ink-200 bg-white/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl lg:hidden"
+    >
+      {tabs.slice(0, 2).map((tab) => (
+        <MobileTab key={tab.key} tab={tab} active={view === tab.key} onNavigate={onNavigate} />
+      ))}
+
+      <div className="relative flex w-16 shrink-0 justify-center">
+        <button
+          type="button"
+          onClick={onBook}
+          aria-label={isAdviser ? 'Schedule a session' : 'Book a consultation'}
+          className="-mt-5 flex h-12 w-12 items-center justify-center rounded-full bg-brand-700 text-white shadow-raised transition hover:bg-brand-600 active:bg-brand-800"
+        >
+          <CalendarPlus className="h-5 w-5" aria-hidden="true" />
+        </button>
+      </div>
+
+      {tabs.slice(2).map((tab) => (
+        <MobileTab key={tab.key} tab={tab} active={view === tab.key} onNavigate={onNavigate} />
+      ))}
+    </nav>
+  );
+}
+
+function MobileTab({ tab, active, onNavigate }) {
+  const { key, label, icon: Icon, count } = tab;
+  return (
+    <button
+      type="button"
+      onClick={() => onNavigate(key)}
+      aria-current={active ? 'page' : undefined}
+      className={`flex flex-1 flex-col items-center gap-0.5 py-2.5 text-[11px] transition ${
+        active ? 'font-semibold text-brand-700' : 'font-medium text-ink-500'
+      }`}
+    >
+      <span className="relative">
+        <Icon className="h-5 w-5" aria-hidden="true" />
+        {count > 0 ? (
+          <span className="tnum absolute -right-1.5 -top-1 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-brand-700 px-1 text-[9px] font-semibold text-white">
+            {count > 9 ? '9+' : count}
+          </span>
+        ) : null}
+      </span>
+      {label}
+    </button>
+  );
+}
+
+/** A small shield mark, so the footer reads as the university and not as chrome. */
+function HauCrest() {
+  return (
+    <svg
+      viewBox="0 0 24 28"
+      aria-hidden="true"
+      className="h-7 w-6 shrink-0 text-brand-300/70"
+    >
+      <path
+        d="M12 1.5 22 5v9.5c0 6-4.2 10.2-10 12.2C6.2 24.7 2 20.5 2 14.5V5z"
+        fill="currentColor"
+        fillOpacity="0.16"
+        stroke="currentColor"
+        strokeWidth="1.2"
+      />
+      <path
+        d="M12 8.2 17 10.6 12 13l-5-2.4z M8.4 12.2v3.1c0 1.4 1.6 2.4 3.6 2.4s3.6-1 3.6-2.4v-3.1"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinejoin="round"
+      />
+    </svg>
   );
 }
 
@@ -721,21 +1061,15 @@ function TopBar({
   onOpenNav,
   unreadTotal,
   onOpenMessages,
+  onNavigate,
+  onSignOut,
 }) {
-  const subtitle = (
-    profile.role === 'adviser'
-      ? [profile.faculty_position || 'Adviser', profile.department]
-      : [profile.year_level, profile.course || profile.department]
-  )
-    .filter(Boolean)
-    .join(' · ');
-
-  // The bar names the page. Without it the only cue for "where am I" is the
-  // sidebar, which is off-screen on a phone exactly when it is needed most.
+  // The bar names the page wherever the sidebar is off-screen, which is the
+  // only place the current view is not already marked.
   const title = navItems(isAdviser).find((item) => item.key === view)?.label ?? 'Dashboard';
 
   return (
-    <header className="no-print sticky top-0 z-30 flex items-center gap-3 border-b border-ink-200 bg-white/90 px-4 py-2.5 backdrop-blur-xl sm:px-6">
+    <header className="no-print sticky top-0 z-30 flex items-center gap-3 border-b border-ink-200 bg-white px-4 py-2.5 sm:px-6">
       <button
         type="button"
         onClick={onOpenNav}
@@ -745,46 +1079,32 @@ function TopBar({
         <Menu className="h-5 w-5" aria-hidden="true" />
       </button>
 
-      <h1 className="shrink-0 text-[15px] font-semibold tracking-tight text-ink-900 lg:hidden">
+      <h1 className="shrink-0 text-h3 font-semibold tracking-tight text-ink-900 lg:hidden">
         {title}
       </h1>
 
-      <div className="relative hidden min-w-0 md:block md:w-64 lg:w-80">
+      <div className="relative hidden min-w-0 md:block md:w-72 lg:w-[26rem]">
         <Search
-          className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ink-400"
+          className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400"
           aria-hidden="true"
         />
         <input
           type="search"
           value={query}
           onChange={(event) => onSearch(event.target.value)}
-          placeholder="Search action items"
+          placeholder="Search anything..."
           aria-label="Search action items"
-          className="w-full rounded-lg border border-ink-200 bg-ink-50 py-1.5 pl-9 pr-3 text-[13px] text-ink-900 transition placeholder:text-ink-400 hover:border-ink-300 focus:border-brand-600 focus:bg-white focus:outline-none focus:ring-2 focus:ring-brand-700/15"
+          className="w-full rounded-full border border-ink-200 bg-ink-50 py-2 pl-10 pr-4 text-body text-ink-900 transition placeholder:text-ink-400 hover:border-ink-300 focus:border-brand-600 focus:bg-white focus:outline-none focus:ring-2 focus:ring-brand-700/15"
         />
       </div>
 
-      <div className="ml-auto flex items-center gap-0.5 md:ml-3">
+      <div className="ml-auto flex items-center gap-1">
         <IconButton
           onClick={onRefresh}
           disabled={refreshing}
           label="Refresh dashboard"
           icon={RefreshCw}
           spin={refreshing}
-        />
-
-        {/* Unread messages, separate from the bell: the bell is about requests
-            waiting on a decision, this is about somebody talking to you. */}
-        <IconButton
-          onClick={onOpenMessages}
-          label={
-            unreadTotal === 0
-              ? 'No unread messages'
-              : `${unreadTotal} unread ${unreadTotal === 1 ? 'message' : 'messages'}`
-          }
-          icon={MessageSquare}
-          count={unreadTotal}
-          countClass="bg-emerald-600"
         />
 
         {/* The bell is the consultation-request notification: for an adviser,
@@ -803,25 +1123,27 @@ function TopBar({
           countClass="bg-brand-700"
         />
 
-        <span aria-hidden="true" className="mx-2 hidden h-5 w-px bg-ink-200 sm:block" />
+        {/* Unread messages, separate from the bell: the bell is about requests
+            waiting on a decision, this is about somebody talking to you. */}
+        <IconButton
+          onClick={onOpenMessages}
+          label={
+            unreadTotal === 0
+              ? 'No unread messages'
+              : `${unreadTotal} unread ${unreadTotal === 1 ? 'message' : 'messages'}`
+          }
+          icon={MessageSquare}
+          count={unreadTotal}
+          countClass="bg-brand-700"
+        />
 
-        <div className="flex items-center gap-2.5">
-          <Avatar name={profile.full_name || profile.email} />
-          <div className="hidden leading-tight sm:block">
-            <p className="max-w-[11rem] truncate text-[13px] font-semibold text-ink-900">
-              {profile.full_name || profile.email}
-            </p>
-            <p className="max-w-[11rem] truncate text-[11px] text-ink-500">
-              {subtitle || (profile.role ?? 'student')}
-            </p>
-          </div>
-        </div>
+        <AccountMenu profile={profile} onNavigate={onNavigate} onSignOut={onSignOut} />
       </div>
     </header>
   );
 }
 
-/** One 32px icon control, optionally badged with a count. */
+/** One icon control, optionally badged with a count. */
 function IconButton({ onClick, disabled, label, icon: Icon, count = 0, countClass, spin }) {
   return (
     <button
@@ -831,15 +1153,101 @@ function IconButton({ onClick, disabled, label, icon: Icon, count = 0, countClas
       aria-label={label}
       className="relative rounded-lg p-2 text-ink-500 transition hover:bg-ink-100 hover:text-ink-900 disabled:opacity-50"
     >
-      <Icon className={`h-4 w-4 ${spin ? 'animate-spin' : ''}`} aria-hidden="true" />
+      <Icon className={`h-[18px] w-[18px] ${spin ? 'animate-spin' : ''}`} aria-hidden="true" />
       {count > 0 ? (
         <span
-          className={`tnum absolute right-0.5 top-0.5 flex h-[15px] min-w-[15px] items-center justify-center rounded-full px-1 text-[9px] font-semibold text-white ring-2 ring-white ${countClass}`}
+          className={`tnum absolute right-0 top-0 flex h-[15px] min-w-[15px] items-center justify-center rounded-full px-1 text-[9px] font-semibold text-white ring-2 ring-white ${countClass}`}
         >
           {count > 9 ? '9+' : count}
         </span>
       ) : null}
     </button>
+  );
+}
+
+/**
+ * The avatar is a menu, not a label. The sidebar dropped its desktop sign-out
+ * on the strength of this, so the menu has to close on Escape and on a click
+ * anywhere outside it.
+ */
+function AccountMenu({ profile, onNavigate, onSignOut }) {
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = (event) => {
+      if (!event.target.closest?.('[data-account-menu]')) setOpen(false);
+    };
+    const onKey = (event) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', close);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const subtitle =
+    profile.role === 'adviser'
+      ? profile.faculty_position || 'Adviser'
+      : profile.course || profile.department || 'Student';
+
+  return (
+    <div className="relative ml-1" data-account-menu>
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className="flex items-center gap-2 rounded-full py-1 pl-1 pr-2 transition hover:bg-ink-100"
+      >
+        <Avatar name={profile.full_name || profile.email} />
+        <span className="hidden max-w-[9rem] truncate text-body font-medium text-ink-900 sm:block">
+          {profile.full_name || profile.email}
+        </span>
+        <ChevronDown
+          className={`hidden h-4 w-4 shrink-0 text-ink-400 transition-transform sm:block ${open ? 'rotate-180' : ''}`}
+          aria-hidden="true"
+        />
+      </button>
+
+      {open ? (
+        <div
+          role="menu"
+          className="absolute right-0 top-full z-40 mt-1.5 w-56 overflow-hidden rounded-xl border border-ink-200 bg-white shadow-lift"
+        >
+          <div className="border-b border-ink-200 px-3.5 py-3">
+            <p className="truncate text-body font-semibold text-ink-900">
+              {profile.full_name || profile.email}
+            </p>
+            <p className="truncate text-small text-ink-500">{subtitle}</p>
+          </div>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onNavigate('profile');
+            }}
+            className="flex w-full items-center gap-2.5 px-3.5 py-2.5 text-body text-ink-700 transition hover:bg-ink-50"
+          >
+            <UserRound className="h-4 w-4 text-ink-400" aria-hidden="true" />
+            My profile
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={onSignOut}
+            className="flex w-full items-center gap-2.5 border-t border-ink-200 px-3.5 py-2.5 text-body text-ink-700 transition hover:bg-ink-50"
+          >
+            <LogOut className="h-4 w-4 text-ink-400" aria-hidden="true" />
+            Sign out
+          </button>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -894,6 +1302,11 @@ function OverviewView({
   onDecideProposal,
   onPropose,
   onCancel,
+  adviser,
+  slots,
+  slotsLoading,
+  activity,
+  onSeeAllHistory,
 }) {
   const meetingDate = consultation ? new Date(consultation.meeting_date) : null;
   const daysAway = meetingDate
@@ -908,126 +1321,169 @@ function OverviewView({
           ? 'Tomorrow'
           : `In ${daysAway} days`;
 
-  // Only groups with a session on the books can be counted - nothing else in the
-  // data says who an adviser advises.
+  // Only groups with a session on the books can be counted - nothing else in
+  // the data says who an adviser advises.
   const bookedGroups = new Set(schedule.map((item) => item.group_name).filter(Boolean)).size;
 
   return (
-    <div className="space-y-6">
-      <HeroBanner displayName={displayName} isAdviser={isAdviser} />
+    <div className="space-y-5">
+      <GreetingHeader displayName={displayName} isAdviser={isAdviser} />
 
       {/* An adviser with no published hours is still fielding guessed times. */}
       {isAdviser && !loading && hourBlocks === 0 ? (
         <PublishHoursPrompt onSetHours={onSetHours} />
       ) : null}
 
-      {/* ------------------------------------------------------- stat tiles */}
+      {/* ------------------------------------------------------- stat cards */}
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {loading ? (
-          [0, 1, 2].map((key) => (
-            <div key={key} className="h-32 skeleton rounded-xl" />
-          ))
+          [0, 1, 2].map((key) => <div key={key} className="skeleton h-[8.5rem] rounded-2xl" />)
         ) : (
           <>
-            <StatTile
+            <StatCard
               icon={CalendarDays}
-              tone="indigo"
+              tone="brand"
               label="Next consultation"
-              value={countdown}
               delay={0}
-              hint={
-                meetingDate
-                  ? dateFormatter.format(meetingDate)
-                  : isAdviser
-                    ? 'Nothing booked with you yet'
-                    : 'Book a slot with your adviser'
+            >
+              {consultation ? (
+                <>
+                  <p className="text-h2 font-semibold tracking-tight text-ink-900">{countdown}</p>
+                  <p className="mt-1 truncate text-small text-ink-500">
+                    {dateFormatter.format(meetingDate)}
+                  </p>
+                  <p className="mt-0.5 truncate text-small text-ink-500">
+                    {timeFormatter.format(meetingDate)}
+                    {consultation.location ? ` \u00b7 ${consultation.location}` : ''}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="text-h3 font-semibold tracking-tight text-ink-900">
+                    No consultation booked
+                  </p>
+                  <p className="mt-1 text-small text-ink-500">
+                    {isAdviser
+                      ? 'Nothing is on your schedule yet.'
+                      : adviser
+                        ? 'Your adviser has available slots.'
+                        : 'Pick an adviser to get started.'}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={onBook}
+                    className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-brand-700 px-3 py-2 text-small font-semibold text-white transition hover:bg-brand-600 active:bg-brand-800"
+                  >
+                    <CalendarPlus className="h-3.5 w-3.5" aria-hidden="true" />
+                    {isAdviser ? 'Schedule a session' : 'Book a consultation'}
+                  </button>
+                </>
+              )}
+            </StatCard>
+
+            <StatCard
+              icon={tasks.length === 0 ? CheckCircle2 : ListChecks}
+              tone={tasks.length === 0 ? 'success' : 'warning'}
+              label="Action items"
+              delay={60}
+              action={
+                tasks.length > 0
+                  ? { label: 'View all', onClick: onSeeAllTasks }
+                  : null
               }
-              highlighted
-            />
-            <StatTile
-              icon={ListChecks}
-              tone="amber"
-              label="Open action items"
-              value={String(tasks.length)}
-              delay={70}
-              hint={
-                tasks.length === 0
-                  ? 'Everything is resolved'
+            >
+              <p className="tnum text-h1 font-bold tracking-tight text-ink-900">
+                {tasks.length}{' '}
+                <span className="text-h3 font-semibold text-ink-500">pending</span>
+              </p>
+              <p className="mt-1 text-small text-ink-500">
+                {tasks.length === 0
+                  ? "You're all caught up!"
                   : isAdviser
                     ? 'Across your groups'
-                    : 'Waiting on your group'
-              }
-            />
+                    : 'Waiting on your group'}
+              </p>
+            </StatCard>
+
             {isAdviser ? (
-              <StatTile
-                icon={Users}
-                tone="emerald"
-                label="Groups booked"
-                value={String(bookedGroups)}
-                delay={140}
-                hint={`${schedule.length} upcoming ${schedule.length === 1 ? 'session' : 'sessions'}`}
-              />
+              <StatCard icon={Users} tone="info" label="Groups booked" delay={120}>
+                <p className="tnum text-h1 font-bold tracking-tight text-ink-900">
+                  {bookedGroups}
+                </p>
+                <p className="mt-1 text-small text-ink-500">
+                  {schedule.length} upcoming {schedule.length === 1 ? 'session' : 'sessions'}
+                </p>
+              </StatCard>
             ) : (
-              <StatTile
+              <StatCard
                 icon={TrendingUp}
-                tone="emerald"
+                tone="success"
                 label="Capstone progress"
-                value={`${progress}%`}
-                delay={140}
-                hint={`Next up: ${nextMilestone}`}
-              />
+                delay={120}
+                action={{ label: 'View details', onClick: onSeeAllHistory }}
+              >
+                <p className="tnum text-h1 font-bold tracking-tight text-ink-900">{progress}%</p>
+                <p className="mt-1 text-small text-ink-500">{nextMilestone}</p>
+                <ProgressBar value={progress} className="mt-3" />
+              </StatCard>
             )}
           </>
         )}
       </div>
 
-      {/* --------------------------------------------------- main + rail --- */}
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.65fr)_minmax(0,1fr)]">
-        <div className="space-y-6">
-          {/* Requests come first when there are any: for an adviser this is the
-              queue they have to clear before anything is on the books. */}
-          {!loading && requests.length > 0 ? (
-            <section>
-              <SectionHeading
-                title={isAdviser ? 'Consultation requests' : 'Waiting on your adviser'}
-                action={
-                  requests.length > 2 ? (
-                    <button
-                      type="button"
-                      onClick={onSeeAllRequests}
-                      className="flex items-center gap-1 rounded-lg text-sm font-semibold text-brand-700 hover:underline"
-                    >
-                      See all
-                      <ChevronRight className="h-4 w-4" aria-hidden="true" />
-                    </button>
-                  ) : null
-                }
-              />
-              <div className="space-y-4">
-                {requests.slice(0, 2).map((request) => (
-                  <RequestCard
-                    key={request.id}
-                    request={request}
-                    isAdviser={isAdviser}
-                    busy={busyRequestId === request.id}
-                    onDecide={onDecide}
-                    myId={myId}
-                    onDecideProposal={onDecideProposal}
-                    onPropose={onPropose}
-                    onCancel={onCancel}
-                    unread={unreadByConsultation?.[request.id] ?? 0}
-                    onOpenThread={onOpenThread}
-                  />
-                ))}
-              </div>
-            </section>
-          ) : null}
+      {/* ----------------------------------------------- the three-up row --- */}
+      <div className="grid gap-4 xl:grid-cols-12">
+        <div className="xl:col-span-5">
+          {isAdviser ? (
+            <RequestQueuePanel
+              loading={loading}
+              requests={requests}
+              busyRequestId={busyRequestId}
+              onDecide={onDecide}
+              onSeeAll={onSeeAllRequests}
+              unreadByConsultation={unreadByConsultation}
+              onOpenThread={onOpenThread}
+            />
+          ) : (
+            <NextStepCard
+              loading={loading}
+              nextMilestone={nextMilestone}
+              tasks={tasks}
+              onSeeAllTasks={onSeeAllTasks}
+              onBook={onBook}
+            />
+          )}
+        </div>
 
-          <section>
-            <SectionHeading title="Upcoming consultation" />
-            {loading ? (
-              <div className="h-52 skeleton rounded-xl" />
-            ) : (
+        <div className="xl:col-span-4">
+          {isAdviser ? (
+            <SchedulePanel
+              schedule={schedule}
+              loading={loading}
+              onBook={onBook}
+              unreadByConsultation={unreadByConsultation}
+              onOpenThread={onOpenThread}
+            />
+          ) : (
+            <MilestonePanel progress={progress} />
+          )}
+        </div>
+
+        <div className="xl:col-span-3">
+          {isAdviser ? (
+            <ActivityFeed items={activity} loading={loading} onSeeAll={onSeeAllHistory} />
+          ) : (
+            <AdviserPanel adviser={adviser} consultation={consultation} loading={loading} onOpenThread={onOpenThread} onBook={onBook} />
+          )}
+        </div>
+      </div>
+
+      {/* ---------------------------------------------------- the wide row --- */}
+      <div className="grid gap-4 xl:grid-cols-12">
+        <div className="xl:col-span-9">
+          {consultation ? (
+            <section>
+              <SectionHeading title="Upcoming consultation" />
               <ConsultationCard
                 consultation={consultation}
                 countdown={countdown}
@@ -1041,65 +1497,111 @@ function OverviewView({
                 onPropose={onPropose}
                 onCancel={onCancel}
               />
-            )}
-          </section>
-
-          <section>
-            <SectionHeading
-              title="Pending action items"
-              action={
-                tasks.length > 3 ? (
-                  <button
-                    type="button"
-                    onClick={onSeeAllTasks}
-                    className="flex items-center gap-1 rounded-lg text-sm font-semibold text-brand-700 hover:underline"
-                  >
-                    See all
-                    <ChevronRight className="h-4 w-4" aria-hidden="true" />
-                  </button>
-                ) : null
-              }
+            </section>
+          ) : isAdviser ? (
+            <section>
+              <SectionHeading title="Upcoming consultation" />
+              <ConsultationCard
+                consultation={null}
+                countdown={countdown}
+                isAdviser={isAdviser}
+                onBook={onBook}
+                onOpenThread={onOpenThread}
+                onWrapUp={onWrapUp}
+                myId={myId}
+                onDecideProposal={onDecideProposal}
+                onPropose={onPropose}
+                onCancel={onCancel}
+              />
+            </section>
+          ) : (
+            <OpenSlotsPanel
+              adviser={adviser}
+              slots={slots}
+              loading={slotsLoading}
+              onBook={onBook}
             />
-            {loading ? (
-              <div className="grid gap-4 sm:grid-cols-2">
-                {[0, 1].map((key) => (
-                  <div key={key} className="h-32 skeleton rounded-xl" />
-                ))}
-              </div>
-            ) : tasks.length === 0 ? (
-              <EmptyTasks />
-            ) : (
-              <div className="grid gap-4 sm:grid-cols-2">
-                {tasks.slice(0, 4).map((task) => (
-                  <TaskCard
-                    key={task.id}
-                    task={task}
-                    busy={busyTaskId === task.id}
-                    onResolve={() => onResolve(task)}
-                  />
-                ))}
-              </div>
-            )}
-          </section>
+          )}
         </div>
 
-        <div className="space-y-6">
+        <div className="xl:col-span-3">
           {isAdviser ? (
-            <SchedulePanel
-              schedule={schedule}
+            <TaskDigestPanel
               loading={loading}
-              onBook={onBook}
-              unreadByConsultation={unreadByConsultation}
-              onOpenThread={onOpenThread}
+              tasks={tasks}
+              busyTaskId={busyTaskId}
+              onResolve={onResolve}
+              onSeeAll={onSeeAllTasks}
             />
           ) : (
-            <>
-              <MilestonePanel progress={progress} />
-              <AdviserPanel consultation={consultation} loading={loading} />
-            </>
+            <ActivityFeed items={activity} loading={loading} onSeeAll={onSeeAllHistory} />
           )}
         </div>
       </div>
+
+      {/* Requests come first for a student too, but below the fold: theirs are
+          waiting on somebody else, so they are news rather than a queue. */}
+      {!isAdviser && !loading && requests.length > 0 ? (
+        <section>
+          <SectionHeading
+            title="Waiting on your adviser"
+            action={
+              requests.length > 2 ? (
+                <SeeAllLink label="See all" onClick={onSeeAllRequests} />
+              ) : null
+            }
+          />
+          <div className="grid gap-4">
+            {requests.slice(0, 2).map((request) => (
+              <RequestCard
+                key={request.id}
+                request={request}
+                isAdviser={isAdviser}
+                busy={busyRequestId === request.id}
+                onDecide={onDecide}
+                myId={myId}
+                onDecideProposal={onDecideProposal}
+                onPropose={onPropose}
+                onCancel={onCancel}
+                unread={unreadByConsultation?.[request.id] ?? 0}
+                onOpenThread={onOpenThread}
+              />
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {/* The student's own action items, in full. */}
+      {!isAdviser ? (
+        <section>
+          <SectionHeading
+            title="Pending action items"
+            action={
+              tasks.length > 4 ? <SeeAllLink label="See all" onClick={onSeeAllTasks} /> : null
+            }
+          />
+          {loading ? (
+            <div className="grid gap-4 sm:grid-cols-2">
+              {[0, 1].map((key) => (
+                <div key={key} className="skeleton h-32 rounded-2xl" />
+              ))}
+            </div>
+          ) : tasks.length === 0 ? (
+            <EmptyTasks />
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-2">
+              {tasks.slice(0, 4).map((task) => (
+                <TaskCard
+                  key={task.id}
+                  task={task}
+                  busy={busyTaskId === task.id}
+                  onResolve={() => onResolve(task)}
+                />
+              ))}
+            </div>
+          )}
+        </section>
+      ) : null}
     </div>
   );
 }
@@ -1111,96 +1613,550 @@ function OverviewView({
  */
 function PublishHoursPrompt({ onSetHours }) {
   return (
-    <section className="animate-rise flex flex-wrap items-center gap-4 rounded-xl border border-gold-200 bg-gold-50/60 p-5">
-      <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-gold-100 text-gold-700">
-        <CalendarClock className="h-6 w-6" aria-hidden="true" />
+    <section className="animate-rise flex flex-wrap items-center gap-4 rounded-2xl border border-gold-200 bg-gold-50/60 p-4">
+      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gold-100 text-gold-700">
+        <CalendarClock className="h-5 w-5" aria-hidden="true" />
       </span>
       <div className="min-w-0 flex-1">
-        <p className="font-bold tracking-tight text-ink-900">
-          Publish your consultation hours
-        </p>
-        <p className="mt-0.5 text-sm leading-relaxed text-ink-600">
-          Right now students pick any time they like and wait for you to answer. Publish the
-          hours you are free and they can only book slots that already work for you.
+        <p className="text-h3 font-semibold text-ink-900">You have not published any hours</p>
+        <p className="mt-0.5 text-body text-ink-600">
+          Until you do, students are guessing a time and waiting to be declined.
         </p>
       </div>
       <button
         type="button"
         onClick={onSetHours}
-        className="ml-auto inline-flex shrink-0 items-center gap-2 rounded-lg bg-ink-900 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-ink-800 active:scale-[0.99]"
+        className="inline-flex items-center gap-1.5 rounded-lg bg-brand-700 px-3.5 py-2 text-body font-semibold text-white transition hover:bg-brand-600"
       >
-        Set my hours
-        <ChevronRight className="h-4 w-4" aria-hidden="true" />
+        Set consultation hours
+        <ArrowRight className="h-4 w-4" aria-hidden="true" />
       </button>
     </section>
   );
 }
 
-/*
- * A page header, not a banner. The gradient slab this replaces spent the most
- * valuable strip of the screen on decoration; a greeting, the date and the one
- * action worth taking say the same thing in a third of the height and leave the
- * colour budget for the data underneath.
- */
-function HeroBanner({ displayName, isAdviser }) {
+/* -------------------------------------------------------------- greeting -- */
+
+/** Morning before noon, afternoon before 18:00, evening after. */
+function greetingFor(date) {
+  const hour = date.getHours();
+  if (hour < 12) return 'Good morning';
+  if (hour < 18) return 'Good afternoon';
+  return 'Good evening';
+}
+
+function GreetingHeader({ displayName, isAdviser }) {
+  const now = new Date();
   return (
-    <section className="animate-rise flex flex-wrap items-end justify-between gap-4 border-b border-ink-200 pb-6">
+    <section className="animate-rise flex flex-wrap items-start justify-between gap-4">
       <div className="min-w-0">
-        <p className="flex items-center gap-1.5 text-[13px] text-ink-500">
-          <CalendarDays className="h-3.5 w-3.5 text-ink-400" aria-hidden="true" />
-          {todayFormatter.format(new Date())}
-        </p>
-        <h2 className="mt-1.5 text-[26px] font-semibold leading-tight tracking-[-0.02em] text-ink-900">
-          Welcome back, {displayName}
+        <h2 className="text-h1 font-bold tracking-tight text-ink-900">
+          {greetingFor(now)}, {displayName} <span aria-hidden="true">&#128075;</span>
         </h2>
-        <p className="mt-1.5 max-w-xl text-[13px] leading-relaxed text-ink-500">
+        <p className="mt-1 text-body text-ink-500">
           {isAdviser
-            ? 'Your consultation schedule and every action item still open across your groups.'
-            : 'Where your capstone stands today — sessions, advisers and everything still open.'}
+            ? "Here's what's happening across your groups today."
+            : "Here's what's happening with your capstone today."}
         </p>
       </div>
-
+      <p className="flex shrink-0 items-center gap-2 text-body text-ink-500">
+        <CalendarDays className="h-4 w-4 text-ink-400" aria-hidden="true" />
+        <span className="leading-tight">
+          <span className="block font-medium text-ink-700">{todayFormatter.format(now)}</span>
+          <span className="block text-small text-ink-400">{weekdayFormatter.format(now)}</span>
+        </span>
+      </p>
     </section>
   );
 }
 
+/* ------------------------------------------------------------ stat cards -- */
+
 /*
- * The icon chip is the only colour on a tile, and it is the status colour --
- * so three tiles are told apart by one small mark each rather than by three
- * competing backgrounds and three gradient rules.
+ * The icon chip is the only colour on a card, and it carries the status --
+ * so three cards are told apart by one small mark each rather than by three
+ * competing backgrounds.
  */
 const TONES = {
-  indigo: 'bg-brand-50 text-brand-700',
-  amber: 'bg-gold-50 text-gold-600',
-  emerald: 'bg-emerald-50 text-emerald-600',
+  brand: 'bg-brand-50 text-brand-700',
+  success: 'bg-emerald-50 text-emerald-600',
+  warning: 'bg-gold-50 text-gold-600',
+  info: 'bg-info-50 text-info-600',
 };
 
-function StatTile({ icon: Icon, tone, label, value, hint, highlighted = false, delay = 0 }) {
+function StatCard({ icon: Icon, tone, label, action, delay = 0, children }) {
   return (
     <article
       style={{ '--delay': `${delay}ms` }}
-      className={`animate-rise rounded-xl border bg-white p-4 transition-colors ${
-        highlighted ? 'border-brand-200 bg-brand-50/40' : 'border-ink-200 hover:border-ink-300'
-      }`}
+      className="animate-rise flex flex-col rounded-2xl border border-ink-200 bg-white p-4 transition-colors hover:border-ink-300"
     >
-      <div className="flex items-center justify-between gap-3">
-        <span className="flex items-center gap-2 text-[12px] font-medium text-ink-500">
-          <span className={`flex h-6 w-6 items-center justify-center rounded-md ${TONES[tone]}`}>
-            <Icon className="h-3.5 w-3.5" aria-hidden="true" />
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <span className="flex items-center gap-2 text-body font-medium text-ink-600">
+          <span className={`flex h-7 w-7 items-center justify-center rounded-lg ${TONES[tone]}`}>
+            <Icon className="h-4 w-4" aria-hidden="true" />
           </span>
           {label}
         </span>
-        {highlighted ? (
-          <span className="rounded-full bg-brand-100 px-2 py-0.5 text-[10px] font-semibold text-brand-800">
-            Up next
+      </div>
+      <div className="min-w-0 flex-1">{children}</div>
+      {action ? (
+        <div className="mt-3 flex justify-end">
+          <SeeAllLink label={action.label} onClick={action.onClick} />
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+function ProgressBar({ value, className = '' }) {
+  return (
+    <div
+      className={`h-1.5 w-full overflow-hidden rounded-full bg-ink-200 ${className}`}
+      role="progressbar"
+      aria-valuenow={value}
+      aria-valuemin={0}
+      aria-valuemax={100}
+    >
+      <div
+        className="h-full rounded-full bg-brand-700 transition-[width] duration-500"
+        style={{ width: `${value}%` }}
+      />
+    </div>
+  );
+}
+
+function SeeAllLink({ label, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex items-center gap-1 rounded text-small font-semibold text-brand-700 transition hover:text-brand-600 hover:underline"
+    >
+      {label}
+      <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+    </button>
+  );
+}
+
+/* ------------------------------------------------------------- next step -- */
+
+/**
+ * What the milestone actually asks of a group. The milestone list is a
+ * program-level checklist rather than table data, so the steps under it are
+ * too -- they are the same for every group at that stage.
+ */
+const MILESTONE_ACTIONS = {
+  'Title Proposal': [
+    'Draft the problem statement',
+    'Line up three candidate titles',
+    'Book a consultation to review them',
+  ],
+  'Chapters 1-3': [
+    'Finish the review of related literature',
+    'Settle the research methodology',
+    'Send chapters to your adviser before the session',
+  ],
+  'Data Gathering': [
+    'Finalise the instrument',
+    'Secure the respondents and permissions',
+    'Log the responses as they arrive',
+  ],
+  'System Review': [
+    'Review system requirements',
+    'Prepare demo build',
+    'Schedule consultation',
+  ],
+  'Final Defense': [
+    'Fold in every adviser revision',
+    'Rehearse the defense deck',
+    'Confirm the panel schedule',
+  ],
+};
+
+function NextStepCard({ loading, nextMilestone, tasks, onSeeAllTasks, onBook }) {
+  if (loading) return <div className="skeleton h-[17rem] rounded-2xl" />;
+
+  const steps = MILESTONE_ACTIONS[nextMilestone] ?? [];
+  const done = nextMilestone === 'All milestones complete';
+
+  return (
+    <article className="animate-rise flex h-full flex-col rounded-2xl border border-ink-200 bg-white p-5">
+      <p className="flex items-center gap-2 text-body font-medium text-ink-600">
+        <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand-50 text-brand-700">
+          <Lightbulb className="h-4 w-4" aria-hidden="true" />
+        </span>
+        Your next step
+      </p>
+
+      <h3 className="mt-3 text-h2 font-semibold tracking-tight text-brand-700">
+        {nextMilestone}
+      </h3>
+      <p className="mt-1 text-body text-ink-500">
+        {done
+          ? 'Every milestone is checked off. Nothing is blocking your defense.'
+          : 'Prepare this milestone for adviser evaluation.'}
+      </p>
+
+      {steps.length > 0 ? (
+        <div className="mt-4 rounded-xl border border-brand-100 bg-brand-50/50 p-4">
+          <p className="text-small font-semibold text-ink-700">Recommended actions</p>
+          <ul className="mt-2.5 space-y-2">
+            {steps.map((step) => (
+              <li key={step} className="flex items-start gap-2 text-body text-ink-700">
+                <CheckCircle2
+                  className="mt-0.5 h-4 w-4 shrink-0 text-brand-400"
+                  aria-hidden="true"
+                />
+                {step}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      <div className="mt-auto flex flex-wrap items-center gap-2 pt-4">
+        <button
+          type="button"
+          onClick={onSeeAllTasks}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-700 px-3.5 py-2 text-body font-semibold text-white transition hover:bg-brand-600 active:bg-brand-800"
+        >
+          <ListChecks className="h-4 w-4" aria-hidden="true" />
+          View action items
+          {tasks.length > 0 ? (
+            <span className="tnum ml-0.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-white/20 px-1.5 text-[10px] font-semibold">
+              {tasks.length}
+            </span>
+          ) : null}
+        </button>
+        <button
+          type="button"
+          onClick={onBook}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-ink-200 px-3.5 py-2 text-body font-semibold text-ink-700 transition hover:border-ink-300 hover:bg-ink-50"
+        >
+          <CalendarPlus className="h-4 w-4" aria-hidden="true" />
+          Book consultation
+        </button>
+      </div>
+    </article>
+  );
+}
+
+/* --------------------------------------------------------- open slots ----- */
+
+/**
+ * The adviser's next open slots, so booking starts from something real rather
+ * than from an empty date field. Slots come from the same endpoint the booking
+ * form uses, so anything shown here is genuinely bookable.
+ */
+function OpenSlotsPanel({ adviser, slots, loading, onBook }) {
+  return (
+    <section className="animate-rise h-full rounded-2xl border border-ink-200 bg-white p-5">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <p className="flex items-center gap-2 text-h3 font-semibold text-ink-900">
+            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand-50 text-brand-700">
+              <CalendarClock className="h-4 w-4" aria-hidden="true" />
+            </span>
+            Open consultation slots
+          </p>
+          <p className="mt-1 text-small text-ink-500">
+            {adviser
+              ? `Next available times from ${adviser.full_name}.`
+              : 'Pick an adviser to see the times they hold hours.'}
+          </p>
+        </div>
+        {slots.length > 0 ? <SeeAllLink label="View all slots" onClick={onBook} /> : null}
+      </div>
+
+      {loading ? (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {[0, 1, 2, 3].map((key) => (
+            <div key={key} className="skeleton h-[4.5rem] rounded-xl" />
+          ))}
+        </div>
+      ) : slots.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-ink-300 bg-ink-50/50 px-6 py-8 text-center">
+          <p className="text-body font-medium text-ink-700">
+            {adviser
+              ? 'No open slots in the next two weeks'
+              : 'No adviser selected yet'}
+          </p>
+          <p className="mt-1 text-small text-ink-500">
+            {adviser
+              ? 'You can still request a time and let your adviser confirm it.'
+              : 'Start a booking to choose an adviser from your department.'}
+          </p>
+          <button
+            type="button"
+            onClick={onBook}
+            className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-brand-700 px-3.5 py-2 text-small font-semibold text-white transition hover:bg-brand-600"
+          >
+            <CalendarPlus className="h-3.5 w-3.5" aria-hidden="true" />
+            Book a consultation
+          </button>
+        </div>
+      ) : (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {slots.map((slot) => (
+            <button
+              key={slot.start}
+              type="button"
+              onClick={onBook}
+              className="group rounded-xl border border-ink-200 bg-white px-3.5 py-3 text-left transition hover:border-brand-300 hover:bg-brand-50/50"
+            >
+              <p className="text-small font-medium text-ink-500">
+                {slotDayFormatter.format(new Date(slot.start))}
+              </p>
+              <p className="tnum mt-1 text-body font-semibold text-ink-900">
+                {timeFormatter.format(new Date(slot.start))}
+                {slot.end ? ` \u2013 ${timeFormatter.format(new Date(slot.end))}` : ''}
+              </p>
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+/* ------------------------------------------------------- recent activity -- */
+
+/**
+ * A feed assembled from the records the API already returns: requests raised
+ * and answered, sessions wrapped up, and threads with something unread. There
+ * is no activity table, so nothing here is invented -- every row points at a
+ * consultation that exists.
+ */
+function ActivityFeed({ items, loading, onSeeAll }) {
+  return (
+    <section className="animate-rise flex h-full flex-col rounded-2xl border border-ink-200 bg-white p-5">
+      <div className="mb-4 flex items-center justify-between gap-2">
+        <p className="text-h3 font-semibold text-ink-900">Recent activity</p>
+        {items.length > 0 ? <SeeAllLink label="View all" onClick={onSeeAll} /> : null}
+      </div>
+
+      {loading ? (
+        <div className="space-y-3">
+          {[0, 1, 2].map((key) => (
+            <div key={key} className="skeleton h-12 rounded-lg" />
+          ))}
+        </div>
+      ) : items.length === 0 ? (
+        <p className="rounded-xl border border-dashed border-ink-300 bg-ink-50/50 px-4 py-8 text-center text-small text-ink-500">
+          Nothing has happened yet. Booking a consultation starts the trail.
+        </p>
+      ) : (
+        <ul className="space-y-3.5">
+          {items.map((item) => (
+            <li key={item.id} className="flex gap-2.5">
+              <span
+                className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${item.tone}`}
+              >
+                <item.icon className="h-3.5 w-3.5" aria-hidden="true" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-body font-medium leading-snug text-ink-900">{item.title}</p>
+                {item.detail ? (
+                  <p className="mt-0.5 truncate text-small text-ink-500">{item.detail}</p>
+                ) : null}
+              </div>
+              {item.when ? (
+                <span className="shrink-0 text-small text-ink-400">{item.when}</span>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+/* -------------------------------------------------- adviser request queue -- */
+
+/** The adviser's approval queue, condensed to fit the three-up row. */
+function RequestQueuePanel({
+  loading,
+  requests,
+  busyRequestId,
+  onDecide,
+  onSeeAll,
+  unreadByConsultation,
+  onOpenThread,
+}) {
+  if (loading) return <div className="skeleton h-[17rem] rounded-2xl" />;
+
+  if (requests.length === 0) {
+    return (
+      <section className="animate-rise flex h-full flex-col rounded-2xl border border-ink-200 bg-white p-5">
+        <p className="text-h3 font-semibold text-ink-900">Consultation requests</p>
+        <div className="mt-4 flex flex-1 flex-col items-center justify-center rounded-xl border border-dashed border-ink-300 bg-ink-50/50 px-6 py-10 text-center">
+          <span className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-50 text-emerald-600">
+            <CheckCircle2 className="h-5 w-5" aria-hidden="true" />
           </span>
+          <p className="mt-3 text-body font-medium text-ink-700">Nothing waiting on you</p>
+          <p className="mt-1 text-small text-ink-500">
+            Every request has an answer. New ones land here.
+          </p>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="animate-rise flex h-full flex-col rounded-2xl border border-ink-200 bg-white p-5">
+      <div className="mb-4 flex items-center justify-between gap-2">
+        <p className="text-h3 font-semibold text-ink-900">Consultation requests</p>
+        <SeeAllLink label="See all" onClick={onSeeAll} />
+      </div>
+
+      <ul className="space-y-3">
+        {requests.slice(0, 3).map((request) => (
+          <RequestQueueItem
+            key={request.id}
+            request={request}
+            busy={busyRequestId === request.id}
+            onDecide={onDecide}
+            onSeeAll={onSeeAll}
+            unread={unreadByConsultation?.[request.id] ?? 0}
+            onOpenThread={onOpenThread}
+          />
+        ))}
+      </ul>
+
+      {requests.length > 3 ? (
+        <p className="mt-3 text-small text-ink-500">
+          {requests.length - 3} more waiting on you.
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+/**
+ * One request as a rail row. Declining needs a reason the API insists on, so
+ * that answer goes to the full card on the requests page; approving does not,
+ * so it can happen here.
+ */
+function RequestQueueItem({ request, busy, onDecide, onSeeAll, unread, onOpenThread }) {
+  const when = new Date(request.meeting_date);
+  const proposalLive = Boolean(request.proposal_live);
+
+  return (
+    <li className="rounded-xl border border-ink-200 p-3.5">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-small text-ink-500">
+            {request.group_name || 'Consultation'}
+          </p>
+          <p className="mt-0.5 truncate text-body font-semibold text-ink-900">{request.topic}</p>
+        </div>
+        {unread > 0 ? (
+          <button
+            type="button"
+            onClick={() => onOpenThread(request.id)}
+            aria-label={`${unread} unread ${unread === 1 ? 'message' : 'messages'}`}
+            className="relative shrink-0 rounded-lg p-1.5 text-ink-500 transition hover:bg-ink-100 hover:text-ink-900"
+          >
+            <MessageSquare className="h-4 w-4" aria-hidden="true" />
+            <span className="tnum absolute right-0 top-0 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-brand-700 px-1 text-[9px] font-semibold text-white">
+              {unread > 9 ? '9+' : unread}
+            </span>
+          </button>
         ) : null}
       </div>
-      <p className="tnum mt-3 text-[22px] font-semibold leading-none tracking-[-0.02em] text-ink-900">
-        {value}
+
+      <p className="tnum mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-small text-ink-500">
+        <span className="inline-flex items-center gap-1.5">
+          <CalendarDays className="h-3.5 w-3.5 text-ink-400" aria-hidden="true" />
+          {slotDayFormatter.format(when)}
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <Clock className="h-3.5 w-3.5 text-ink-400" aria-hidden="true" />
+          {timeFormatter.format(when)}
+        </span>
       </p>
-      <p className="mt-2 truncate text-[12px] text-ink-500">{hint}</p>
-    </article>
+
+      {proposalLive ? (
+        <p className="mt-2.5 rounded-lg bg-gold-50 px-2.5 py-1.5 text-small font-medium text-gold-800">
+          A new time is on the table. Answer it on the requests page.
+        </p>
+      ) : (
+        <div className="mt-3 flex items-center gap-2">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => onDecide(request, 'approved')}
+            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-small font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {busy ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+            ) : (
+              <Check className="h-3.5 w-3.5" aria-hidden="true" />
+            )}
+            Approve
+          </button>
+          <button
+            type="button"
+            onClick={onSeeAll}
+            className="inline-flex flex-1 items-center justify-center rounded-lg border border-ink-200 px-3 py-1.5 text-small font-semibold text-ink-700 transition hover:border-ink-300 hover:bg-ink-50"
+          >
+            Review
+          </button>
+        </div>
+      )}
+    </li>
+  );
+}
+
+/** The adviser's action items, condensed into the right rail. */
+function TaskDigestPanel({ loading, tasks, busyTaskId, onResolve, onSeeAll }) {
+  return (
+    <section className="animate-rise flex h-full flex-col rounded-2xl border border-ink-200 bg-white p-5">
+      <div className="mb-4 flex items-center justify-between gap-2">
+        <p className="text-h3 font-semibold text-ink-900">Action items</p>
+        {tasks.length > 3 ? <SeeAllLink label="View all" onClick={onSeeAll} /> : null}
+      </div>
+
+      {loading ? (
+        <div className="space-y-3">
+          {[0, 1, 2].map((key) => (
+            <div key={key} className="skeleton h-12 rounded-lg" />
+          ))}
+        </div>
+      ) : tasks.length === 0 ? (
+        <p className="rounded-xl border border-dashed border-ink-300 bg-ink-50/50 px-4 py-8 text-center text-small text-ink-500">
+          Nothing open across your groups.
+        </p>
+      ) : (
+        <ul className="space-y-3">
+          {tasks.slice(0, 4).map((task) => (
+            <li key={task.id} className="flex items-start gap-2.5">
+              <button
+                type="button"
+                onClick={() => onResolve(task)}
+                disabled={busyTaskId === task.id}
+                aria-label={`Mark "${task.task_description}" as resolved`}
+                className="mt-0.5 shrink-0 rounded-full text-ink-300 transition hover:text-brand-700 disabled:opacity-50"
+              >
+                {busyTaskId === task.id ? (
+                  <CheckCircle2 className="h-4 w-4 animate-pulse text-brand-700" aria-hidden="true" />
+                ) : (
+                  <Circle className="h-4 w-4" aria-hidden="true" />
+                )}
+              </button>
+              <div className="min-w-0 flex-1">
+                <p className="line-clamp-2 text-body leading-snug text-ink-900">
+                  {task.task_description}
+                </p>
+                {task.assignee_name ? (
+                  <p className="mt-0.5 truncate text-small text-ink-500">{task.assignee_name}</p>
+                ) : null}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 
@@ -1797,66 +2753,71 @@ function RequestsView({
 
 /* ------------------------------------------------------------- side rail -- */
 
+/**
+ * The capstone as a vertical timeline. The current milestone is the only row
+ * with a fill behind it, so the eye lands on "where are we" before it reads
+ * anything else.
+ */
 function MilestonePanel({ progress }) {
   return (
-    <section className="animate-rise rounded-xl bg-white p-6 border border-ink-200">
-      <div className="flex items-center justify-between gap-3">
-        <h2 className="text-base font-bold tracking-tight text-ink-900">
-          Capstone milestones
-        </h2>
-        <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
-          {progress}%
+    <section className="animate-rise flex h-full flex-col rounded-2xl border border-ink-200 bg-white p-5">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <p className="text-h3 font-semibold text-ink-900">Capstone milestones</p>
+        <span className="tnum shrink-0 rounded-full bg-emerald-50 px-2.5 py-1 text-small font-semibold text-emerald-700">
+          {progress}% complete
         </span>
       </div>
 
-      <div
-        className="mt-4 h-2 w-full overflow-hidden rounded-full bg-ink-100"
-        role="progressbar"
-        aria-valuenow={progress}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-label="Capstone milestone progress"
-      >
-        <div
-          className="h-full rounded-full bg-brand-600 transition-[width] duration-500"
-          style={{ width: `${progress}%` }}
-        />
-      </div>
-
-      <ol className="mt-5 space-y-1">
+      <ol>
         {MILESTONES.map((milestone, index) => {
           const done = index < COMPLETED_MILESTONES;
           const current = index === COMPLETED_MILESTONES;
+          const last = index === MILESTONES.length - 1;
           return (
             <li key={milestone} className="flex gap-3">
               <div className="flex flex-col items-center">
                 {done ? (
-                  <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-500" aria-hidden="true" />
+                  <CheckCircle2
+                    className="h-5 w-5 shrink-0 text-emerald-500"
+                    aria-hidden="true"
+                  />
                 ) : (
                   <Circle
-                    className={`h-5 w-5 shrink-0 ${current ? 'text-brand-600' : 'text-ink-300'}`}
+                    className={`h-5 w-5 shrink-0 ${current ? 'text-brand-700' : 'text-ink-300'}`}
                     aria-hidden="true"
                   />
                 )}
-                {index < MILESTONES.length - 1 ? (
+                {!last ? (
                   <span
-                    className={`my-0.5 w-0.5 flex-1 rounded-full ${done ? 'bg-emerald-200' : 'bg-ink-200'}`}
+                    className={`my-1 w-0.5 flex-1 rounded-full ${done ? 'bg-emerald-200' : 'bg-ink-200'}`}
                   />
                 ) : null}
               </div>
-              <div className="pb-4">
-                <p
-                  className={`text-sm ${
-                    done
-                      ? 'font-semibold text-ink-700'
-                      : current
-                        ? 'font-bold text-brand-700'
-                        : 'font-medium text-ink-400'
-                  }`}
-                >
-                  {milestone}
-                </p>
-                <p className="text-xs text-ink-400">
+
+              <div
+                className={`min-w-0 flex-1 rounded-lg px-2.5 ${last ? 'pb-0' : 'pb-3'} ${
+                  current ? '-mt-1 bg-brand-50/70 py-2' : 'pt-px'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <p
+                    className={`truncate text-body ${
+                      current
+                        ? 'font-semibold text-brand-700'
+                        : done
+                          ? 'font-medium text-ink-900'
+                          : 'text-ink-400'
+                    }`}
+                  >
+                    {milestone}
+                  </p>
+                  {current ? (
+                    <span className="shrink-0 rounded-full bg-brand-100 px-2 py-0.5 text-[10px] font-semibold text-brand-800">
+                      Now
+                    </span>
+                  ) : null}
+                </div>
+                <p className="mt-0.5 text-small text-ink-500">
                   {done ? 'Completed' : current ? 'In progress' : 'Not started'}
                 </p>
               </div>
@@ -1930,40 +2891,117 @@ function SchedulePanel({ schedule, loading, onBook, unreadByConsultation, onOpen
   );
 }
 
-function AdviserPanel({ consultation, loading }) {
-  if (loading) return <div className="h-40 skeleton rounded-xl" />;
+/**
+ * Who the group is working with, and when they are next free.
+ *
+ * `adviser` is the directory record, which is the only place the faculty
+ * position and department live; `consultation` is what proves they are this
+ * group's adviser at all. Either can be missing, and the card says so rather
+ * than inventing a name.
+ */
+function AdviserPanel({ adviser, consultation, loading, onOpenThread, onBook }) {
+  if (loading) return <div className="skeleton h-[17rem] rounded-2xl" />;
+
+  const name = adviser?.full_name ?? consultation?.adviser_name ?? null;
+  const email = adviser?.email ?? consultation?.adviser_email ?? null;
+
+  if (!name) {
+    return (
+      <section className="animate-rise flex h-full flex-col rounded-2xl border border-ink-200 bg-white p-5">
+        <p className="text-h3 font-semibold text-ink-900">Your adviser</p>
+        <div className="mt-4 flex flex-1 flex-col items-center justify-center rounded-xl border border-dashed border-ink-300 bg-ink-50/50 px-4 py-8 text-center">
+          <span className="flex h-10 w-10 items-center justify-center rounded-full bg-ink-100">
+            <User className="h-5 w-5 text-ink-400" aria-hidden="true" />
+          </span>
+          <p className="mt-3 text-body font-medium text-ink-700">No adviser yet</p>
+          <p className="mt-1 text-small text-ink-500">
+            They appear here once you book your first consultation.
+          </p>
+          <button
+            type="button"
+            onClick={onBook}
+            className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-brand-700 px-3.5 py-2 text-small font-semibold text-white transition hover:bg-brand-600"
+          >
+            <CalendarPlus className="h-3.5 w-3.5" aria-hidden="true" />
+            Book a consultation
+          </button>
+        </div>
+      </section>
+    );
+  }
+
+  const subtitle = [adviser?.faculty_position || 'Thesis Adviser', adviser?.department]
+    .filter(Boolean)
+    .join(' \u00b7 ');
+  const publishesHours = Boolean(adviser?.availableFrom);
 
   return (
-    <section className="animate-rise rounded-xl bg-white p-6 border border-ink-200">
-      <h2 className="text-base font-bold tracking-tight text-ink-900">Your adviser</h2>
+    <section className="animate-rise flex h-full flex-col rounded-2xl border border-ink-200 bg-white p-5">
+      <p className="text-h3 font-semibold text-ink-900">Your adviser</p>
 
-      {consultation?.adviser_name ? (
-        <div className="mt-4 flex items-center gap-3.5">
-          <Avatar name={consultation.adviser_name} size="lg" />
-          <div className="min-w-0">
-            <p className="truncate font-bold text-ink-900">{consultation.adviser_name}</p>
-            {consultation.adviser_email ? (
-              <a
-                href={`mailto:${consultation.adviser_email}`}
-                className="mt-0.5 flex items-center gap-1.5 truncate text-xs font-medium text-brand-700 hover:underline"
-              >
-                <Mail className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                {consultation.adviser_email}
-              </a>
-            ) : null}
-            {consultation.group_name ? (
-              <p className="mt-1 text-xs text-ink-400">{consultation.group_name}</p>
-            ) : null}
-          </div>
+      <div className="mt-4 flex items-center gap-3">
+        <Avatar name={name} size="lg" />
+        <div className="min-w-0">
+          <p className="truncate text-body font-semibold text-ink-900">{name}</p>
+          <p className="truncate text-small text-ink-500">{subtitle}</p>
         </div>
-      ) : (
-        <div className="mt-4 flex items-center gap-3.5 text-sm text-ink-500">
-          <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-ink-100">
-            <User className="h-6 w-6 text-ink-400" aria-hidden="true" />
-          </span>
-          <p>Your adviser appears here once a consultation is scheduled.</p>
+      </div>
+
+      <span
+        className={`mt-3 inline-flex w-fit items-center gap-1.5 rounded-full px-2.5 py-1 text-small font-medium ${
+          publishesHours
+            ? 'bg-emerald-50 text-emerald-700'
+            : 'bg-ink-100 text-ink-600'
+        }`}
+      >
+        <span
+          className={`h-1.5 w-1.5 rounded-full ${publishesHours ? 'bg-emerald-500' : 'bg-ink-400'}`}
+          aria-hidden="true"
+        />
+        {publishesHours ? 'Available for consultation' : 'No published hours'}
+      </span>
+
+      {adviser?.availableFrom ? (
+        <div className="mt-4 rounded-xl border border-ink-200 bg-ink-50/60 px-3.5 py-3">
+          <p className="text-small text-ink-500">Next available</p>
+          <p className="tnum mt-0.5 text-body font-semibold text-ink-900">
+            {slotDayFormatter.format(new Date(adviser.availableFrom))}
+            {' \u00b7 '}
+            {timeFormatter.format(new Date(adviser.availableFrom))}
+          </p>
         </div>
-      )}
+      ) : null}
+
+      <div className="mt-auto flex flex-wrap gap-2 pt-4">
+        {email ? (
+          <a
+            href={`mailto:${email}`}
+            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-ink-200 px-3 py-2 text-small font-semibold text-ink-700 transition hover:border-ink-300 hover:bg-ink-50"
+          >
+            <Mail className="h-3.5 w-3.5" aria-hidden="true" />
+            Email
+          </a>
+        ) : null}
+        {consultation?.id ? (
+          <button
+            type="button"
+            onClick={() => onOpenThread(consultation.id)}
+            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand-700 px-3 py-2 text-small font-semibold text-white transition hover:bg-brand-600"
+          >
+            <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
+            Message
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={onBook}
+            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand-700 px-3 py-2 text-small font-semibold text-white transition hover:bg-brand-600"
+          >
+            <CalendarPlus className="h-3.5 w-3.5" aria-hidden="true" />
+            Book
+          </button>
+        )}
+      </div>
     </section>
   );
 }
