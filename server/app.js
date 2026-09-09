@@ -130,6 +130,8 @@ const limitCodeSend = rateLimit({ windowMs: 10 * 60_000, max: 8, key: 'code-send
 // Guessing a code or a password is cheap for the attacker and costly for us.
 const limitCodeVerify = rateLimit({ windowMs: 10 * 60_000, max: 20, key: 'code-verify' });
 const limitLogin = rateLimit({ windowMs: 10 * 60_000, max: 20, key: 'login' });
+// Changing a password submits the old one, so it is a password guess too.
+const limitPasswordChange = rateLimit({ windowMs: 10 * 60_000, max: 10, key: 'password-change' });
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -813,6 +815,69 @@ app.post(
     await userClient.auth.signOut();
 
     res.json({ ok: true, message: 'Password updated. Sign in with your new password.' });
+  }),
+);
+
+/**
+ * POST /api/auth/change-password
+ * Body: { currentPassword, newPassword, refresh_token }
+ * Header: Authorization: Bearer <access_token>
+ *
+ * The signed-in equivalent of the reset flow. Being signed in is not on its own
+ * enough to set a new password -- a borrowed laptop with a live session would
+ * otherwise be a free account takeover -- so the current password is checked
+ * first, on a throwaway client whose session is discarded either way.
+ *
+ * Unlike the reset, this does not sign anybody out. There, the reset itself is
+ * evidence something may be wrong; here the person has just proved they already
+ * know the password, and logging them out of their own phone would be noise.
+ */
+app.post(
+  '/api/auth/change-password',
+  requireAuth,
+  limitPasswordChange,
+  asyncRoute(async (req, res) => {
+    const currentPassword = String(req.body?.currentPassword ?? '');
+    const newPassword = String(req.body?.newPassword ?? '');
+    const refreshToken = String(req.body?.refresh_token ?? '');
+
+    if (!currentPassword) throw new HttpError(400, 'Enter your current password.');
+    if (newPassword.length < 8) {
+      throw new HttpError(400, 'New password must be at least 8 characters.');
+    }
+    if (newPassword === currentPassword) {
+      throw new HttpError(400, 'That is already your password. Choose a different one.');
+    }
+    if (!refreshToken) throw new HttpError(400, 'Your session expired. Sign in again.');
+
+    // A separate client so the check cannot leave the shared one holding
+    // somebody's session.
+    const checkClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    });
+    const { error: checkError } = await checkClient.auth.signInWithPassword({
+      email: req.profile.email,
+      password: currentPassword,
+    });
+    if (checkError) throw new HttpError(401, 'Your current password is not correct.');
+    await checkClient.auth.signOut();
+
+    // updateUser acts on the caller's own session, so it needs their tokens.
+    const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    });
+    const { error: sessionError } = await userClient.auth.setSession({
+      access_token: req.headers.authorization.slice(7).trim(),
+      refresh_token: refreshToken,
+    });
+    if (sessionError) throw new HttpError(401, 'Your session expired. Sign in again.');
+
+    const { error: updateError } = await userClient.auth.updateUser({ password: newPassword });
+    if (updateError) {
+      throw new HttpError(400, updateError.message || 'Could not set the new password.');
+    }
+
+    res.json({ ok: true, message: 'Password changed.' });
   }),
 );
 

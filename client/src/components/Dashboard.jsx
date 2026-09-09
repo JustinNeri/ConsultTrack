@@ -26,6 +26,7 @@ import {
   Lightbulb,
   Pencil,
   Loader2,
+  Lock,
   LogOut,
   Mail,
   MapPin,
@@ -868,6 +869,7 @@ export default function Dashboard({ session, onSignOut, onProfileChanged }) {
             {view === 'profile' ? (
               <ProfileView
                 token={token}
+                refreshToken={session.refresh_token}
                 profile={profile}
                 onSignOut={onSignOut}
                 onProfileChanged={onProfileChanged}
@@ -3506,7 +3508,7 @@ function TaskCard({ task, busy, onResolve }) {
  * Email, role, student and faculty ID and department stay read-only: they are
  * the registrar's or are derived from the address the login code went to.
  */
-function ProfileView({ token, profile, onSignOut, onProfileChanged }) {
+function ProfileView({ token, refreshToken, profile, onSignOut, onProfileChanged }) {
   const isAdviser = profile.role === 'adviser';
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -3788,6 +3790,8 @@ function ProfileView({ token, profile, onSignOut, onProfileChanged }) {
         )}
       </section>
 
+      <PasswordCard token={token} refreshToken={refreshToken} />
+
       <button
         type="button"
         onClick={onSignOut}
@@ -3798,6 +3802,188 @@ function ProfileView({ token, profile, onSignOut, onProfileChanged }) {
         <ArrowRight className="h-4 w-4" aria-hidden="true" />
       </button>
     </div>
+  );
+}
+
+/*
+ * Changing a password from inside the app.
+ *
+ * Collapsed until asked for: on a page people open to check their section, a
+ * permanently expanded set of three password boxes is three boxes of noise.
+ *
+ * The three fields are one form and are submitted together, which is what lets
+ * the browser's password manager offer to update the saved entry -- a "new
+ * password" field with no "current password" beside it usually does not.
+ */
+function PasswordCard({ token, refreshToken }) {
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [visible, setVisible] = useState(false);
+  const [form, setForm] = useState({ current: '', next: '', confirm: '' });
+
+  function update(field, value) {
+    setForm((prev) => ({ ...prev, [field]: value }));
+  }
+
+  function close() {
+    setOpen(false);
+    setForm({ current: '', next: '', confirm: '' });
+    setError('');
+    setVisible(false);
+  }
+
+  async function submit(event) {
+    event.preventDefault();
+    if (saving) return;
+    setError('');
+    setNotice('');
+
+    if (form.next !== form.confirm) {
+      setError('The new passwords do not match.');
+      return;
+    }
+    if (form.next.length < 8) {
+      setError('New password must be at least 8 characters.');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await api('/auth/change-password', {
+        method: 'POST',
+        token,
+        body: {
+          currentPassword: form.current,
+          newPassword: form.next,
+          refresh_token: refreshToken,
+        },
+      });
+      close();
+      setNotice('Password changed. Your next sign-in uses the new one.');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="mt-5 overflow-hidden rounded-2xl border border-ink-200 bg-white">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-4">
+        <div className="min-w-0">
+          <p className="text-h3 font-semibold tracking-tight text-ink-900">Password</p>
+          <p className="mt-0.5 text-[13px] text-ink-500">
+            {open
+              ? 'You will need your current password to set a new one.'
+              : 'The password you sign in with.'}
+          </p>
+        </div>
+        {open ? (
+          <button
+            type="button"
+            onClick={close}
+            className="rounded-lg border border-ink-200 px-4 py-2 text-body font-semibold text-ink-700 transition hover:bg-ink-50"
+          >
+            Cancel
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(true);
+              setNotice('');
+            }}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-ink-200 px-4 py-2 text-body font-semibold text-ink-700 transition hover:border-brand-200 hover:text-brand-700"
+          >
+            <Lock className="h-4 w-4" aria-hidden="true" />
+            Change password
+          </button>
+        )}
+      </div>
+
+      {notice && !open ? (
+        <p className="flex items-start gap-2 border-t border-ink-200 bg-emerald-50 px-6 py-3 text-body font-medium text-emerald-700">
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          {notice}
+        </p>
+      ) : null}
+
+      {open ? (
+        <form onSubmit={submit} noValidate className="border-t border-ink-200 px-6 py-5">
+          <ProfileField label="Current password" id="pw-current">
+            <input
+              id="pw-current"
+              type={visible ? 'text' : 'password'}
+              autoComplete="current-password"
+              required
+              value={form.current}
+              onChange={(event) => update('current', event.target.value)}
+              className={EDIT_INPUT}
+            />
+          </ProfileField>
+
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <ProfileField label="New password" id="pw-next">
+              <input
+                id="pw-next"
+                type={visible ? 'text' : 'password'}
+                autoComplete="new-password"
+                required
+                value={form.next}
+                onChange={(event) => update('next', event.target.value)}
+                className={EDIT_INPUT}
+              />
+              <p className="mt-1.5 text-small text-ink-500">At least 8 characters.</p>
+            </ProfileField>
+
+            <ProfileField label="Confirm new password" id="pw-confirm">
+              <input
+                id="pw-confirm"
+                type={visible ? 'text' : 'password'}
+                autoComplete="new-password"
+                required
+                value={form.confirm}
+                onChange={(event) => update('confirm', event.target.value)}
+                className={EDIT_INPUT}
+              />
+            </ProfileField>
+          </div>
+
+          <label className="mt-3 flex w-fit items-center gap-2 text-small text-ink-600">
+            <input
+              type="checkbox"
+              checked={visible}
+              onChange={(event) => setVisible(event.target.checked)}
+              className="h-3.5 w-3.5 rounded border-ink-300 text-brand-700 focus:ring-brand-700/20"
+            />
+            Show passwords
+          </label>
+
+          {error ? (
+            <p
+              role="alert"
+              className="mt-4 flex items-start gap-2 rounded-lg border border-rose-100 bg-rose-50 px-3.5 py-3 text-body font-medium text-rose-700"
+            >
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+              {error}
+            </p>
+          ) : null}
+
+          <div className="mt-5 flex justify-end">
+            <button
+              type="submit"
+              disabled={saving}
+              className="inline-flex items-center gap-2 rounded-lg bg-brand-700 px-4 py-2 text-body font-semibold text-white transition hover:bg-brand-600 disabled:opacity-60"
+            >
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
+              Update password
+            </button>
+          </div>
+        </form>
+      ) : null}
+    </section>
   );
 }
 
