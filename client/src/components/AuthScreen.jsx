@@ -20,6 +20,9 @@ import { api } from '../lib/api.js';
 import { DEPARTMENTS, DEPARTMENT_NAMES, YEAR_LEVELS } from '../lib/hau.js';
 
 const RESEND_SECONDS = 60;
+// Mirrors HAU_DOMAINS in the API. Shown as guidance only -- the server is what
+// actually enforces the rule, and it can allowlist test addresses.
+const HAU_EMAIL_HINT = 'Only HAU accounts (@student.hau.edu.ph or @hau.edu.ph) can register.';
 const CODE_LENGTH = 6;
 const MIN_PASSWORD = 8;
 
@@ -281,7 +284,7 @@ export default function AuthScreen({ onAuthenticated }) {
             <form onSubmit={handleLogin} noValidate>
               <h2 className="text-lg font-semibold text-slate-900">Sign in</h2>
               <p className="mt-1 text-sm text-slate-500">
-                Use the email and password you registered with.
+                Use the HAU email and password you registered with.
               </p>
 
               <Field label="Email address" htmlFor="login-email" icon={Mail} className="mt-6">
@@ -292,7 +295,7 @@ export default function AuthScreen({ onAuthenticated }) {
                   required
                   value={email}
                   onChange={(event) => setEmail(event.target.value)}
-                  placeholder="juan.delacruz@gmail.com"
+                  placeholder="juan.delacruz@student.hau.edu.ph"
                   className={INPUT}
                 />
               </Field>
@@ -332,7 +335,8 @@ export default function AuthScreen({ onAuthenticated }) {
 
               <h2 className="text-lg font-semibold text-slate-900">Create your account</h2>
               <p className="mt-1 text-sm text-slate-500">
-                Start with your email. We will send a 6-digit code to confirm it is yours.
+                Start with your HAU email. We will send a 6-digit code to confirm it is
+                yours.
               </p>
 
               <Field label="Email address" htmlFor="signup-email" icon={Mail} className="mt-6">
@@ -343,9 +347,10 @@ export default function AuthScreen({ onAuthenticated }) {
                   required
                   value={email}
                   onChange={(event) => setEmail(event.target.value)}
-                  placeholder="juan.delacruz@gmail.com"
+                  placeholder="juan.delacruz@student.hau.edu.ph"
                   className={INPUT}
                 />
+                <p className="mt-1 text-xs text-slate-400">{HAU_EMAIL_HINT}</p>
               </Field>
 
               {error ? <ErrorNote message={error} /> : null}

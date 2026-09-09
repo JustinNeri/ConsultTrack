@@ -29,6 +29,9 @@ const {
   // Serverless runtimes give every invocation its own container, so a large pool
   // there just burns Postgres connections. Set PG_POOL_MAX=1 on Vercel.
   PG_POOL_MAX = 10,
+  // Comma-separated addresses allowed to register despite not being HAU ones.
+  // Leave empty in production.
+  AUTH_EMAIL_ALLOWLIST = '',
 } = process.env;
 
 for (const [key, value] of Object.entries({ SUPABASE_URL, SUPABASE_ANON_KEY, DATABASE_URL })) {
@@ -71,6 +74,19 @@ class HttpError extends Error {
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const CODE_RE = /^\d{6}$/;
+
+// Sign-up is limited to HAU Google Workspace accounts: students hold addresses
+// on the student subdomain, faculty and advisers on the main one.
+const HAU_DOMAINS = ['student.hau.edu.ph', 'hau.edu.ph'];
+const HAU_EMAIL_HINT = 'Use your HAU email address (@student.hau.edu.ph or @hau.edu.ph).';
+
+// Individual addresses that skip the domain check, for demos and testing.
+const EMAIL_ALLOWLIST = new Set(
+  AUTH_EMAIL_ALLOWLIST.split(',')
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean),
+);
+
 // Loose on purpose - confirm HAU's real student-number format and tighten this.
 const STUDENT_ID_RE = /^[0-9-]{6,20}$/;
 
@@ -147,6 +163,22 @@ async function sendAccessCode(email, { createUser }) {
   }
 }
 
+/**
+ * Normalizes the address and enforces the HAU domain rule.
+ *
+ * Only the registration routes call this. Sign-in checks the format alone so
+ * that an account created before the rule existed is not locked out.
+ */
+function requireHauEmail(value) {
+  const email = String(value ?? '').trim().toLowerCase();
+  if (!EMAIL_RE.test(email)) throw new HttpError(400, 'Enter a valid email address.');
+  if (EMAIL_ALLOWLIST.has(email)) return email;
+
+  const domain = email.slice(email.lastIndexOf('@') + 1);
+  if (!HAU_DOMAINS.includes(domain)) throw new HttpError(400, HAU_EMAIL_HINT);
+  return email;
+}
+
 /** A profile counts as registered once the details step has been submitted. */
 function isComplete(profile) {
   return Boolean(profile?.registration_completed_at);
@@ -160,8 +192,7 @@ function isComplete(profile) {
 app.post(
   '/api/auth/start',
   asyncRoute(async (req, res) => {
-    const email = String(req.body?.email ?? '').trim().toLowerCase();
-    if (!EMAIL_RE.test(email)) throw new HttpError(400, 'Enter a valid email address.');
+    const email = requireHauEmail(req.body?.email);
 
     const { rows } = await pool.query(
       `select registration_completed_at from public.profiles where email = $1`,
@@ -183,8 +214,7 @@ app.post(
 app.post(
   '/api/auth/send-code',
   asyncRoute(async (req, res) => {
-    const email = String(req.body?.email ?? '').trim().toLowerCase();
-    if (!EMAIL_RE.test(email)) throw new HttpError(400, 'Enter a valid email address.');
+    const email = requireHauEmail(req.body?.email);
 
     await sendAccessCode(email, { createUser: true });
     res.json({ ok: true, message: `Access code sent to ${email}.` });
@@ -200,10 +230,9 @@ app.post(
 app.post(
   '/api/auth/verify-code',
   asyncRoute(async (req, res) => {
-    const email = String(req.body?.email ?? '').trim().toLowerCase();
+    const email = requireHauEmail(req.body?.email);
     const code = String(req.body?.code ?? '').trim();
 
-    if (!EMAIL_RE.test(email)) throw new HttpError(400, 'Enter a valid email address.');
     if (!CODE_RE.test(code)) throw new HttpError(400, 'The access code must be 6 digits.');
 
     const { data, error } = await supabase.auth.verifyOtp({ email, token: code, type: 'email' });

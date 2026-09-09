@@ -87,6 +87,31 @@ Set the subject to something like `Your ConsultTrack access code`.
 **Gmail's own ceiling is roughly 500 messages per day** and it is not adjustable.
 Fine for a capstone. Move to Resend / SendGrid / Postmark before a real launch.
 
+---
+
+## A6. Who is allowed to sign up
+
+Registration is limited to HAU Google Workspace accounts — `@student.hau.edu.ph`
+for students, `@hau.edu.ph` for faculty and advisers. The list lives in
+`HAU_DOMAINS` in `server/app.js`; the check runs on `/auth/start`,
+`/auth/send-code` and `/auth/verify-code`, so nobody can bypass it from the
+browser. Sign-in only checks that the address is well formed, so an account
+created before this rule was added still works.
+
+Delivery to those addresses is ordinary Gmail → Google Workspace mail and needs
+no extra setup. If a code does not arrive, check spam first, then Supabase →
+**Logs** → **Auth Logs** for an SMTP failure.
+
+To demo with a personal address, set `AUTH_EMAIL_ALLOWLIST` on the API to a
+comma-separated list:
+
+```
+AUTH_EMAIL_ALLOWLIST=you@gmail.com,panelist@gmail.com
+```
+
+Those addresses skip the domain check and nothing else. Leave the variable
+unset in production.
+
 ## A6. Test it end to end
 
 ```bash
@@ -184,6 +209,7 @@ remote.
 | `DATABASE_URL` | **transaction pooler** string, port `6543` (see B4) |
 | `PG_POOL_MAX` | `1` |
 | `CLIENT_ORIGIN` | your deployed URL, e.g. `https://consulttrack.vercel.app` |
+| `AUTH_EMAIL_ALLOWLIST` | leave unset in production (see A6) |
 
 Do **not** set `VITE_API_URL` — the client defaults to `/api`, which is the same
 origin in production. That is what you want.
