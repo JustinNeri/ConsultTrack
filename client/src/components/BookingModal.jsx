@@ -113,23 +113,28 @@ export default function BookingModal({ token, defaultGroupName, onClose, onCreat
         role="dialog"
         aria-modal="true"
         aria-labelledby="booking-title"
-        className="max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-t-2xl bg-white shadow-xl sm:rounded-2xl"
+        className="scrollbar-slim max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-t-3xl bg-white shadow-lift sm:rounded-3xl"
       >
         {/* ---------------------------------------------------------- header */}
-        <div className="flex items-start justify-between border-b border-slate-200 px-6 py-5">
-          <div>
-            <h2 id="booking-title" className="text-lg font-semibold text-slate-900">
-              Book a consultation
-            </h2>
-            <p className="mt-0.5 text-sm text-slate-500">
-              Reserve a slot with your adviser and set the agenda ahead of time.
-            </p>
+        <div className="flex items-start justify-between gap-4 border-b border-slate-100 px-6 py-5">
+          <div className="flex gap-3.5">
+            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-700 to-brand-900 text-white">
+              <CalendarDays className="h-5 w-5" aria-hidden="true" />
+            </span>
+            <div>
+              <h2 id="booking-title" className="text-lg font-extrabold tracking-tight text-slate-900">
+                Book a consultation
+              </h2>
+              <p className="mt-0.5 text-sm text-slate-500">
+                Reserve a slot with your adviser and set the agenda ahead of time.
+              </p>
+            </div>
           </div>
           <button
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+            className="rounded-xl p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
           >
             <X className="h-5 w-5" aria-hidden="true" />
           </button>
@@ -197,8 +202,8 @@ export default function BookingModal({ token, defaultGroupName, onClose, onCreat
 
           {/* ----------------------------------------------- attachments UI - */}
           <div className="mt-5">
-            <p className="mb-2 text-sm font-medium text-slate-700">
-              Attachments <span className="font-normal text-slate-400">(optional)</span>
+            <p className="mb-2 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-600">
+              Attachments <span className="font-medium normal-case text-slate-400">(optional)</span>
             </p>
 
             <button
@@ -212,16 +217,16 @@ export default function BookingModal({ token, defaultGroupName, onClose, onCreat
               onDrop={handleDrop}
               className={`flex w-full flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-8 text-center transition ${
                 dragging
-                  ? 'border-rose-800 bg-rose-50'
-                  : 'border-slate-300 bg-slate-50 hover:border-rose-300 hover:bg-rose-50/40'
+                  ? 'border-brand-600 bg-brand-50'
+                  : 'border-slate-200 bg-slate-50 hover:border-brand-300 hover:bg-brand-50/40'
               }`}
             >
               <UploadCloud
-                className={`h-8 w-8 ${dragging ? 'text-rose-800' : 'text-slate-400'}`}
+                className={`h-8 w-8 ${dragging ? 'text-brand-700' : 'text-slate-400'}`}
                 aria-hidden="true"
               />
-              <p className="mt-2 text-sm font-medium text-slate-700">
-                Drop files here, or <span className="text-rose-800">browse</span>
+              <p className="mt-2 text-sm font-semibold text-slate-700">
+                Drop files here, or <span className="text-brand-700">browse</span>
               </p>
               <p className="mt-0.5 text-xs text-slate-400">
                 PDF, DOCX or images - up to {MAX_ATTACHMENTS} files
@@ -244,7 +249,7 @@ export default function BookingModal({ token, defaultGroupName, onClose, onCreat
                 {files.map((file, index) => (
                   <li
                     key={`${file.name}-${index}`}
-                    className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm"
+                    className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2 text-sm"
                   >
                     <span className="truncate text-slate-700">{file.name}</span>
                     <button
@@ -268,7 +273,7 @@ export default function BookingModal({ token, defaultGroupName, onClose, onCreat
           {error ? (
             <p
               role="alert"
-              className="mt-4 flex items-start gap-2 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-800"
+              className="mt-4 flex items-start gap-2 rounded-xl border border-rose-100 bg-rose-50 px-3.5 py-3 text-sm font-medium text-rose-700"
             >
               <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
               {error}
@@ -280,14 +285,14 @@ export default function BookingModal({ token, defaultGroupName, onClose, onCreat
             <button
               type="button"
               onClick={onClose}
-              className="rounded-xl border border-slate-300 px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+              className="rounded-xl border border-slate-200 px-4 py-3 text-sm font-bold text-slate-700 transition hover:bg-slate-50"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={!canSubmit}
-              className="flex items-center justify-center gap-2 rounded-xl bg-rose-800 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-rose-900 focus:outline-none focus:ring-2 focus:ring-rose-800/40 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
+              className="flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-brand-700 to-brand-600 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-brand-900/20 transition hover:from-brand-800 hover:to-brand-700 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none"
             >
               {submitting ? (
                 <>
@@ -306,15 +311,20 @@ export default function BookingModal({ token, defaultGroupName, onClose, onCreat
 }
 
 const inputClass =
-  'w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-rose-800 focus:outline-none focus:ring-2 focus:ring-rose-800/20';
+  'w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3 text-sm text-slate-900 transition placeholder:text-slate-400 focus:border-brand-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-brand-500/10';
 
 function Field({ id, label, icon: Icon, className = '', optional = false, children }) {
   return (
     <div className={className}>
-      <label htmlFor={id} className="mb-1.5 flex items-center gap-1.5 text-sm font-medium text-slate-700">
-        <Icon className="h-4 w-4 text-slate-400" aria-hidden="true" />
+      <label
+        htmlFor={id}
+        className="mb-1.5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-600"
+      >
+        <Icon className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
         {label}
-        {optional ? <span className="font-normal text-slate-400">(optional)</span> : null}
+        {optional ? (
+          <span className="font-medium normal-case text-slate-400">(optional)</span>
+        ) : null}
       </label>
       {children}
     </div>

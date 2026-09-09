@@ -1,5 +1,34 @@
 @import 'tailwindcss';
 
+/*
+ * ConsultTrack design tokens
+ * --------------------------
+ * The palette is built around HAU's crimson. Accents (amber, emerald, indigo,
+ * sky) are borrowed from Tailwind so the dashboard tiles can be colour-coded
+ * without inventing a second scale.
+ */
+@theme {
+  --font-sans: 'Plus Jakarta Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+  --color-brand-50: #fdf3f5;
+  --color-brand-100: #fbe4e8;
+  --color-brand-200: #f7ccd4;
+  --color-brand-300: #efa5b3;
+  --color-brand-400: #e3738a;
+  --color-brand-500: #d24865;
+  --color-brand-600: #bd2f50;
+  --color-brand-700: #9e2242;
+  --color-brand-800: #85203c;
+  --color-brand-900: #6d1c33;
+  --color-brand-950: #400c1c;
+
+  /* Page ground behind the rounded app shell. */
+  --color-canvas: #eceef6;
+
+  --shadow-card: 0 1px 2px rgb(15 23 42 / 0.04), 0 8px 24px -12px rgb(15 23 42 / 0.12);
+  --shadow-lift: 0 2px 4px rgb(15 23 42 / 0.04), 0 18px 40px -18px rgb(15 23 42 / 0.28);
+}
+
 html,
 body,
 #root {
@@ -8,4 +37,44 @@ body,
 
 body {
   -webkit-font-smoothing: antialiased;
+  background-color: var(--color-canvas);
+}
+
+/* Consistent focus ring for every interactive element. */
+:where(button, a, input, select, textarea):focus-visible {
+  outline: 2px solid var(--color-brand-600);
+  outline-offset: 2px;
+}
+
+/* Slim scrollbars inside panels so the rounded shell keeps its shape. */
+.scrollbar-slim {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-slate-300) transparent;
+}
+.scrollbar-slim::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.scrollbar-slim::-webkit-scrollbar-thumb {
+  background-color: var(--color-slate-300);
+  border-radius: 9999px;
+}
+
+@keyframes float-slow {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+.animate-float {
+  animation: float-slow 6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-float {
+    animation: none;
+  }
 }
