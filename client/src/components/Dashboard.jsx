@@ -28,7 +28,6 @@ import {
   Menu,
   RefreshCw,
   Search,
-  Sparkles,
   TrendingUp,
   User,
   UserRound,
@@ -98,6 +97,13 @@ const todayFormatter = new Intl.DateTimeFormat(undefined, {
   year: 'numeric',
 });
 const monthFormatter = new Intl.DateTimeFormat(undefined, { month: 'short' });
+// For the three-across detail strip, where the long form overflows.
+const detailDateFormatter = new Intl.DateTimeFormat(undefined, {
+  weekday: 'short',
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+});
 
 export default function Dashboard({ session, onSignOut }) {
   const [consultation, setConsultation] = useState(null);
@@ -346,8 +352,8 @@ export default function Dashboard({ session, onSignOut }) {
   const displayName = firstName || profile.email || 'there';
 
   return (
-    <div className="min-h-screen bg-canvas lg:p-4">
-      <div className="app-shell mx-auto flex min-h-screen w-full max-w-[1600px] overflow-hidden bg-white lg:min-h-[calc(100vh-2rem)] lg:rounded-3xl lg:shadow-lift lg:ring-1 lg:ring-ink-900/5">
+    <div className="min-h-screen bg-white">
+      <div className="app-shell flex min-h-screen w-full">
         <Sidebar
           view={view}
           isAdviser={isAdviser}
@@ -364,6 +370,7 @@ export default function Dashboard({ session, onSignOut }) {
 
         <div className="flex min-w-0 flex-1 flex-col">
           <TopBar
+            view={view}
             profile={profile}
             query={query}
             onSearch={handleSearch}
@@ -383,11 +390,11 @@ export default function Dashboard({ session, onSignOut }) {
             }}
           />
 
-          <main className="app-main scrollbar-slim flex-1 overflow-y-auto bg-ink-50/70 px-4 py-6 sm:px-7 sm:py-8">
+          <main className="app-main scrollbar-slim flex-1 overflow-y-auto bg-canvas px-4 py-6 sm:px-7 sm:py-8">
             {error ? (
               <div
                 role="alert"
-                className="mb-6 flex items-start gap-2.5 rounded-2xl border border-rose-100 bg-rose-50 px-4 py-3.5 text-sm font-medium text-rose-700"
+                className="mb-6 flex items-start gap-2.5 rounded-xl border border-rose-100 bg-rose-50 px-4 py-3.5 text-sm font-medium text-rose-700"
               >
                 <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
                 <span className="flex-1">{error}</span>
@@ -404,7 +411,7 @@ export default function Dashboard({ session, onSignOut }) {
             {notice ? (
               <div
                 role="status"
-                className="mb-6 flex items-start gap-2.5 rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3.5 text-sm font-medium text-emerald-800"
+                className="mb-6 flex items-start gap-2.5 rounded-xl border border-emerald-100 bg-emerald-50 px-4 py-3.5 text-sm font-medium text-emerald-800"
               >
                 <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
                 <span className="flex-1">{notice}</span>
@@ -590,48 +597,58 @@ function Sidebar({ view, isAdviser, requestCount, onNavigate, onSignOut, onBook,
           type="button"
           aria-label="Close navigation"
           onClick={onClose}
-          className="fixed inset-0 z-40 bg-ink-900/40 backdrop-blur-sm lg:hidden"
+          className="fixed inset-0 z-40 bg-ink-950/50 lg:hidden"
         />
       ) : null}
 
+      {/*
+        Near-black rather than crimson. A dark neutral rail lets the one
+        institutional colour do its job -- it marks the current view and the
+        primary action, instead of competing with itself across the whole panel.
+      */}
       <aside
-        className={`no-print fixed inset-y-0 left-0 z-50 flex w-72 flex-col overflow-hidden bg-gradient-to-b from-brand-800 via-brand-900 to-brand-950 p-5 transition-transform duration-300 lg:static lg:z-auto lg:w-64 lg:translate-x-0 ${
+        className={`no-print fixed inset-y-0 left-0 z-50 flex w-[17rem] flex-col bg-ink-950 px-3 py-4 transition-transform duration-200 ease-out lg:static lg:z-auto lg:w-[15.5rem] lg:translate-x-0 ${
           open ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
-        {/* A warm bloom behind the wordmark keeps the crimson from going flat. */}
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute -left-16 -top-16 h-56 w-56 rounded-full bg-brand-500/25 blur-3xl"
-        />
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute -bottom-24 -right-16 h-56 w-56 rounded-full bg-gold-500/10 blur-3xl"
-        />
-        <div className="relative flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-white/15 ring-1 ring-white/25 backdrop-blur">
-              <GraduationCap className="h-6 w-6 text-white" aria-hidden="true" />
-            </div>
-            <div>
-              <p className="font-extrabold tracking-tight text-white">ConsultTrack</p>
-              <p className="text-[11px] font-medium text-brand-200">Holy Angel University</p>
-            </div>
+        <div className="flex items-center justify-between px-2">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-700 shadow-sm">
+              <GraduationCap className="h-[18px] w-[18px] text-white" aria-hidden="true" />
+            </span>
+            <span className="leading-tight">
+              <span className="block text-[15px] font-semibold tracking-tight text-white">
+                ConsultTrack
+              </span>
+              <span className="block text-[11px] text-ink-400">Holy Angel University</span>
+            </span>
           </div>
           <button
             type="button"
             onClick={onClose}
             aria-label="Close navigation"
-            className="rounded-lg p-1.5 text-brand-100 transition hover:bg-white/10 lg:hidden"
+            className="rounded-md p-1.5 text-ink-400 transition hover:bg-white/10 hover:text-white lg:hidden"
           >
-            <X className="h-5 w-5" aria-hidden="true" />
+            <X className="h-4.5 w-4.5" aria-hidden="true" />
           </button>
         </div>
 
-        <nav className="relative mt-9 flex flex-1 flex-col gap-1.5">
-          <p className="mb-1 px-3 text-[10px] font-bold uppercase tracking-widest text-brand-300/70">
-            Menu
-          </p>
+        {/*
+          The primary action sits above the nav, not inside a promo card at the
+          bottom of it: booking is the thing people came to do, so it should be
+          the first thing under the wordmark.
+        */}
+        <button
+          type="button"
+          onClick={onBook}
+          className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-brand-700 px-3 py-2.5 text-[13px] font-semibold text-white transition hover:bg-brand-600 active:bg-brand-800"
+        >
+          <CalendarPlus className="h-4 w-4" aria-hidden="true" />
+          {isAdviser ? 'Schedule session' : 'Book consultation'}
+        </button>
+
+        <nav className="mt-7 flex flex-1 flex-col gap-0.5">
+          <p className="mb-1.5 px-2 text-[11px] font-medium tracking-wide text-ink-500">Menu</p>
           {navItems(isAdviser).map(({ key, label, icon: Icon, badge }) => {
             const active = view === key;
             const count = badge ? requestCount : 0;
@@ -641,31 +658,29 @@ function Sidebar({ view, isAdviser, requestCount, onNavigate, onSignOut, onBook,
                 type="button"
                 onClick={() => onNavigate(key)}
                 aria-current={active ? 'page' : undefined}
-                className={`group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition ${
+                className={`group relative flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] transition ${
                   active
-                    ? 'bg-white font-bold text-brand-800 shadow-lg shadow-brand-950/40'
-                    : 'font-medium text-brand-100/80 hover:bg-white/10 hover:text-white'
+                    ? 'bg-white/[0.08] font-semibold text-white'
+                    : 'font-medium text-ink-400 hover:bg-white/[0.05] hover:text-ink-100'
                 }`}
               >
-                {/* A gold rule on the active item, so the current view is
-                    readable from the edge of the eye. */}
+                {/* A crimson rule on the active item, readable from the corner
+                    of the eye without adding a second filled surface. */}
                 <span
                   aria-hidden="true"
-                  className={`absolute -left-5 top-1/2 h-6 w-1 -translate-y-1/2 rounded-r-full bg-gold-300 transition-opacity ${
+                  className={`absolute left-0 top-1/2 h-4.5 w-[3px] -translate-y-1/2 rounded-r-full bg-brand-500 transition-opacity ${
                     active ? 'opacity-100' : 'opacity-0'
                   }`}
                 />
                 <Icon
-                  className={`h-5 w-5 transition-transform ${active ? '' : 'group-hover:scale-110'}`}
+                  className={`h-4 w-4 shrink-0 ${active ? 'text-brand-400' : 'text-ink-500 group-hover:text-ink-300'}`}
                   aria-hidden="true"
                 />
-                {label}
+                <span className="truncate">{label}</span>
                 {count > 0 ? (
                   <span
-                    className={`ml-auto flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-[10px] font-bold ${
-                      active
-                        ? 'bg-brand-700 text-white'
-                        : 'animate-ping-badge bg-gold-300 text-brand-950'
+                    className={`tnum ml-auto flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-1.5 text-[10px] font-semibold ${
+                      active ? 'bg-brand-600 text-white' : 'bg-brand-600/90 text-white'
                     }`}
                   >
                     {count > 9 ? '9+' : count}
@@ -674,36 +689,18 @@ function Sidebar({ view, isAdviser, requestCount, onNavigate, onSignOut, onBook,
               </button>
             );
           })}
-
-          <div className="mt-6 rounded-2xl bg-white/10 p-4 ring-1 ring-white/15 backdrop-blur">
-            <Sparkles className="h-5 w-5 text-gold-300" aria-hidden="true" />
-            <p className="mt-2.5 text-sm font-bold text-white">
-              {isAdviser ? 'Set a session' : 'Need your adviser?'}
-            </p>
-            <p className="mt-1 text-xs leading-relaxed text-brand-100/80">
-              {isAdviser
-                ? 'Schedule a consultation with one of your thesis groups.'
-                : 'Book a consultation slot and keep the capstone moving.'}
-            </p>
-            <button
-              type="button"
-              onClick={onBook}
-              className="mt-3.5 flex w-full items-center justify-center gap-1.5 rounded-xl bg-white px-3 py-2.5 text-xs font-bold text-brand-800 transition hover:bg-brand-50"
-            >
-              <CalendarPlus className="h-4 w-4" aria-hidden="true" />
-              {isAdviser ? 'Schedule' : 'Book now'}
-            </button>
-          </div>
         </nav>
 
-        <button
-          type="button"
-          onClick={onSignOut}
-          className="relative mt-6 flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-brand-100/80 transition hover:bg-white/10 hover:text-white"
-        >
-          <LogOut className="h-5 w-5" aria-hidden="true" />
-          Sign out
-        </button>
+        <div className="mt-4 border-t border-white/[0.08] pt-3">
+          <button
+            type="button"
+            onClick={onSignOut}
+            className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium text-ink-400 transition hover:bg-white/[0.05] hover:text-ink-100"
+          >
+            <LogOut className="h-4 w-4 shrink-0 text-ink-500" aria-hidden="true" />
+            Sign out
+          </button>
+        </div>
       </aside>
     </>
   );
@@ -712,6 +709,7 @@ function Sidebar({ view, isAdviser, requestCount, onNavigate, onSignOut, onBook,
 /* ----------------------------------------------------------------- topbar -- */
 
 function TopBar({
+  view,
   profile,
   query,
   onSearch,
@@ -730,94 +728,90 @@ function TopBar({
       : [profile.year_level, profile.course || profile.department]
   )
     .filter(Boolean)
-    .join(' - ');
+    .join(' · ');
+
+  // The bar names the page. Without it the only cue for "where am I" is the
+  // sidebar, which is off-screen on a phone exactly when it is needed most.
+  const title = navItems(isAdviser).find((item) => item.key === view)?.label ?? 'Dashboard';
 
   return (
-    <header className="no-print sticky top-0 z-30 flex items-center gap-3 border-b border-ink-100 bg-white/85 px-4 py-3.5 backdrop-blur-xl sm:px-7">
+    <header className="no-print sticky top-0 z-30 flex items-center gap-3 border-b border-ink-200 bg-white/90 px-4 py-2.5 backdrop-blur-xl sm:px-6">
       <button
         type="button"
         onClick={onOpenNav}
         aria-label="Open navigation"
-        className="rounded-xl p-2 text-ink-500 transition hover:bg-ink-100 hover:text-ink-900 lg:hidden"
+        className="-ml-1 rounded-lg p-2 text-ink-500 transition hover:bg-ink-100 hover:text-ink-900 lg:hidden"
       >
         <Menu className="h-5 w-5" aria-hidden="true" />
       </button>
 
-      <div className="relative min-w-0 flex-1 sm:max-w-md">
+      <h1 className="shrink-0 text-[15px] font-semibold tracking-tight text-ink-900 lg:hidden">
+        {title}
+      </h1>
+
+      <div className="relative hidden min-w-0 md:block md:w-64 lg:w-80">
         <Search
-          className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400"
+          className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ink-400"
           aria-hidden="true"
         />
         <input
           type="search"
           value={query}
           onChange={(event) => onSearch(event.target.value)}
-          placeholder="Search action items..."
+          placeholder="Search action items"
           aria-label="Search action items"
-          className="w-full rounded-xl border border-ink-200 bg-ink-50 py-2.5 pl-10 pr-3 text-sm text-ink-900 transition placeholder:text-ink-400 focus:border-brand-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-brand-500/10"
+          className="w-full rounded-lg border border-ink-200 bg-ink-50 py-1.5 pl-9 pr-3 text-[13px] text-ink-900 transition placeholder:text-ink-400 hover:border-ink-300 focus:border-brand-600 focus:bg-white focus:outline-none focus:ring-2 focus:ring-brand-700/15"
         />
       </div>
 
-      <div className="ml-auto flex items-center gap-1.5 sm:gap-2.5">
-        <button
-          type="button"
+      <div className="ml-auto flex items-center gap-0.5 md:ml-3">
+        <IconButton
           onClick={onRefresh}
           disabled={refreshing}
-          aria-label="Refresh dashboard"
-          className="rounded-xl p-2.5 text-ink-500 transition hover:bg-ink-100 hover:text-ink-900 disabled:opacity-50"
-        >
-          <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} aria-hidden="true" />
-        </button>
+          label="Refresh dashboard"
+          icon={RefreshCw}
+          spin={refreshing}
+        />
 
         {/* Unread messages, separate from the bell: the bell is about requests
             waiting on a decision, this is about somebody talking to you. */}
-        <button
-          type="button"
+        <IconButton
           onClick={onOpenMessages}
-          aria-label={
+          label={
             unreadTotal === 0
               ? 'No unread messages'
               : `${unreadTotal} unread ${unreadTotal === 1 ? 'message' : 'messages'}`
           }
-          className="relative rounded-xl p-2.5 text-ink-500 transition hover:bg-ink-100 hover:text-ink-900"
-        >
-          <MessageSquare className="h-4 w-4" aria-hidden="true" />
-          {unreadTotal > 0 ? (
-            <span className="animate-ping-badge absolute right-1 top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-emerald-600 px-1 text-[9px] font-bold text-white ring-2 ring-white">
-              {unreadTotal > 9 ? '9+' : unreadTotal}
-            </span>
-          ) : null}
-        </button>
+          icon={MessageSquare}
+          count={unreadTotal}
+          countClass="bg-emerald-600"
+        />
 
         {/* The bell is the consultation-request notification: for an adviser,
             requests awaiting their approval. */}
-        <button
-          type="button"
+        <IconButton
           onClick={onBell}
-          aria-label={
+          label={
             noticeCount === 0
               ? 'No consultation requests'
               : isAdviser
                 ? `${noticeCount} consultation ${noticeCount === 1 ? 'request' : 'requests'} awaiting your approval`
                 : `${noticeCount} consultation ${noticeCount === 1 ? 'request' : 'requests'} to review`
           }
-          className="relative rounded-xl p-2.5 text-ink-500 transition hover:bg-ink-100 hover:text-ink-900"
-        >
-          <Bell className="h-4 w-4" aria-hidden="true" />
-          {noticeCount > 0 ? (
-            <span className="animate-ping-badge absolute right-1 top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-brand-600 px-1 text-[9px] font-bold text-white ring-2 ring-white">
-              {noticeCount > 9 ? '9+' : noticeCount}
-            </span>
-          ) : null}
-        </button>
+          icon={Bell}
+          count={noticeCount}
+          countClass="bg-brand-700"
+        />
 
-        <div className="flex items-center gap-2.5 rounded-xl py-1 pl-1 pr-1 sm:pr-3">
+        <span aria-hidden="true" className="mx-2 hidden h-5 w-px bg-ink-200 sm:block" />
+
+        <div className="flex items-center gap-2.5">
           <Avatar name={profile.full_name || profile.email} />
           <div className="hidden leading-tight sm:block">
-            <p className="max-w-[11rem] truncate text-sm font-bold text-ink-900">
+            <p className="max-w-[11rem] truncate text-[13px] font-semibold text-ink-900">
               {profile.full_name || profile.email}
             </p>
-            <p className="max-w-[11rem] truncate text-xs text-ink-500">
+            <p className="max-w-[11rem] truncate text-[11px] text-ink-500">
               {subtitle || (profile.role ?? 'student')}
             </p>
           </div>
@@ -827,7 +821,29 @@ function TopBar({
   );
 }
 
-function Avatar({ name, size = 'md' }) {
+/** One 32px icon control, optionally badged with a count. */
+function IconButton({ onClick, disabled, label, icon: Icon, count = 0, countClass, spin }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      className="relative rounded-lg p-2 text-ink-500 transition hover:bg-ink-100 hover:text-ink-900 disabled:opacity-50"
+    >
+      <Icon className={`h-4 w-4 ${spin ? 'animate-spin' : ''}`} aria-hidden="true" />
+      {count > 0 ? (
+        <span
+          className={`tnum absolute right-0.5 top-0.5 flex h-[15px] min-w-[15px] items-center justify-center rounded-full px-1 text-[9px] font-semibold text-white ring-2 ring-white ${countClass}`}
+        >
+          {count > 9 ? '9+' : count}
+        </span>
+      ) : null}
+    </button>
+  );
+}
+
+function Avatar({ name, size = 'md', onBrand = false }) {
   const initials = (name || '?')
     .replace(/[^\p{L}\s,]/gu, '')
     .split(/[\s,]+/)
@@ -836,12 +852,14 @@ function Avatar({ name, size = 'md' }) {
     .map((part) => part[0].toUpperCase())
     .join('');
 
-  const dimensions = size === 'lg' ? 'h-14 w-14 text-lg' : 'h-10 w-10 text-xs';
+  const dimensions = size === 'lg' ? 'h-14 w-14 text-base' : 'h-8 w-8 text-[11px]';
+  // On a crimson surface the crimson fill would disappear.
+  const surface = onBrand ? 'bg-white/15 ring-1 ring-white/25' : 'bg-brand-700';
 
   return (
     <span
       aria-hidden="true"
-      className={`flex ${dimensions} shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-brand-600 to-brand-800 font-bold text-white ring-2 ring-white`}
+      className={`flex ${dimensions} ${surface} shrink-0 items-center justify-center rounded-full font-semibold tracking-wide text-white`}
     >
       {initials || '?'}
     </span>
@@ -896,7 +914,7 @@ function OverviewView({
 
   return (
     <div className="space-y-6">
-      <HeroBanner displayName={displayName} isAdviser={isAdviser} onBook={onBook} />
+      <HeroBanner displayName={displayName} isAdviser={isAdviser} />
 
       {/* An adviser with no published hours is still fielding guessed times. */}
       {isAdviser && !loading && hourBlocks === 0 ? (
@@ -907,7 +925,7 @@ function OverviewView({
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {loading ? (
           [0, 1, 2].map((key) => (
-            <div key={key} className="h-32 skeleton rounded-2xl" />
+            <div key={key} className="h-32 skeleton rounded-xl" />
           ))
         ) : (
           <>
@@ -977,7 +995,7 @@ function OverviewView({
                     <button
                       type="button"
                       onClick={onSeeAllRequests}
-                      className="flex items-center gap-1 rounded-lg text-sm font-bold text-brand-700 hover:underline"
+                      className="flex items-center gap-1 rounded-lg text-sm font-semibold text-brand-700 hover:underline"
                     >
                       See all
                       <ChevronRight className="h-4 w-4" aria-hidden="true" />
@@ -1008,7 +1026,7 @@ function OverviewView({
           <section>
             <SectionHeading title="Upcoming consultation" />
             {loading ? (
-              <div className="h-52 skeleton rounded-2xl" />
+              <div className="h-52 skeleton rounded-xl" />
             ) : (
               <ConsultationCard
                 consultation={consultation}
@@ -1034,7 +1052,7 @@ function OverviewView({
                   <button
                     type="button"
                     onClick={onSeeAllTasks}
-                    className="flex items-center gap-1 rounded-lg text-sm font-bold text-brand-700 hover:underline"
+                    className="flex items-center gap-1 rounded-lg text-sm font-semibold text-brand-700 hover:underline"
                   >
                     See all
                     <ChevronRight className="h-4 w-4" aria-hidden="true" />
@@ -1045,7 +1063,7 @@ function OverviewView({
             {loading ? (
               <div className="grid gap-4 sm:grid-cols-2">
                 {[0, 1].map((key) => (
-                  <div key={key} className="h-32 skeleton rounded-2xl" />
+                  <div key={key} className="h-32 skeleton rounded-xl" />
                 ))}
               </div>
             ) : tasks.length === 0 ? (
@@ -1093,12 +1111,12 @@ function OverviewView({
  */
 function PublishHoursPrompt({ onSetHours }) {
   return (
-    <section className="animate-rise flex flex-wrap items-center gap-4 rounded-2xl border border-gold-200 bg-gradient-to-r from-gold-50 to-white p-5 shadow-card">
-      <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-gold-100 text-gold-700">
+    <section className="animate-rise flex flex-wrap items-center gap-4 rounded-xl border border-gold-200 bg-gold-50/60 p-5">
+      <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-gold-100 text-gold-700">
         <CalendarClock className="h-6 w-6" aria-hidden="true" />
       </span>
       <div className="min-w-0 flex-1">
-        <p className="font-extrabold tracking-tight text-ink-900">
+        <p className="font-bold tracking-tight text-ink-900">
           Publish your consultation hours
         </p>
         <p className="mt-0.5 text-sm leading-relaxed text-ink-600">
@@ -1109,7 +1127,7 @@ function PublishHoursPrompt({ onSetHours }) {
       <button
         type="button"
         onClick={onSetHours}
-        className="ml-auto inline-flex shrink-0 items-center gap-2 rounded-xl bg-ink-900 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-ink-800 active:scale-[0.99]"
+        className="ml-auto inline-flex shrink-0 items-center gap-2 rounded-lg bg-ink-900 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-ink-800 active:scale-[0.99]"
       >
         Set my hours
         <ChevronRight className="h-4 w-4" aria-hidden="true" />
@@ -1118,130 +1136,85 @@ function PublishHoursPrompt({ onSetHours }) {
   );
 }
 
-function HeroBanner({ displayName, isAdviser, onBook }) {
+/*
+ * A page header, not a banner. The gradient slab this replaces spent the most
+ * valuable strip of the screen on decoration; a greeting, the date and the one
+ * action worth taking say the same thing in a third of the height and leave the
+ * colour budget for the data underneath.
+ */
+function HeroBanner({ displayName, isAdviser }) {
   return (
-    <section className="animate-rise relative overflow-hidden rounded-3xl bg-gradient-to-br from-brand-700 via-brand-800 to-brand-950 px-6 py-8 shadow-raised sm:px-9 sm:py-10">
-      <div
-        className="pointer-events-none absolute -right-10 -top-16 h-56 w-56 rounded-full bg-brand-400/30 blur-3xl"
-        aria-hidden="true"
-      />
-      <div
-        className="pointer-events-none absolute -bottom-20 left-1/3 h-52 w-52 rounded-full bg-gold-400/20 blur-3xl"
-        aria-hidden="true"
-      />
-      {/* A faint grid, so the largest surface on the page is not bare gradient. */}
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-0 opacity-[0.07]"
-        style={{
-          backgroundImage:
-            'linear-gradient(to right, #fff 1px, transparent 1px), linear-gradient(to bottom, #fff 1px, transparent 1px)',
-          backgroundSize: '3rem 3rem',
-        }}
-      />
-
-      <div className="relative flex flex-wrap items-center justify-between gap-8">
-        <div className="min-w-0 max-w-xl">
-          <p className="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-xs font-semibold text-brand-100 ring-1 ring-white/15 backdrop-blur">
-            <CalendarDays className="h-3.5 w-3.5" aria-hidden="true" />
-            {todayFormatter.format(new Date())}
-          </p>
-          <h1 className="mt-3 text-3xl font-extrabold leading-tight tracking-tight text-white sm:text-4xl">
-            Welcome back, {displayName}!
-          </h1>
-          <p className="mt-2.5 text-sm leading-relaxed text-brand-100/85">
-            {isAdviser
-              ? 'Your consultation schedule and every action item still open across your groups.'
-              : 'Here is where your capstone stands today - sessions, advisers and everything still open.'}
-          </p>
-          <button
-            type="button"
-            onClick={onBook}
-            className="mt-6 inline-flex items-center gap-2 rounded-xl bg-white px-5 py-3 text-sm font-bold text-brand-800 shadow-lg shadow-brand-950/25 transition hover:-translate-y-0.5 hover:bg-brand-50 hover:shadow-xl active:translate-y-0 active:scale-[0.99]"
-          >
-            <CalendarPlus className="h-4 w-4" aria-hidden="true" />
-            {isAdviser ? 'Schedule a session' : 'Book consultation'}
-          </button>
-        </div>
-
-        {/* Decorative badge - the illustration slot in the reference layouts. */}
-        <div className="relative hidden shrink-0 sm:block" aria-hidden="true">
-          <div className="animate-float flex h-32 w-32 items-center justify-center rounded-3xl bg-white/10 ring-1 ring-white/20 backdrop-blur">
-            <GraduationCap className="h-16 w-16 text-white/90" />
-          </div>
-          <span className="absolute -left-6 top-4 h-4 w-4 rounded-full bg-gold-300" />
-          <span className="absolute -bottom-2 -left-2 h-6 w-6 rounded-full bg-brand-300/70" />
-          <span className="absolute -right-3 bottom-6 h-3 w-3 rounded-full bg-emerald-300" />
-        </div>
+    <section className="animate-rise flex flex-wrap items-end justify-between gap-4 border-b border-ink-200 pb-6">
+      <div className="min-w-0">
+        <p className="flex items-center gap-1.5 text-[13px] text-ink-500">
+          <CalendarDays className="h-3.5 w-3.5 text-ink-400" aria-hidden="true" />
+          {todayFormatter.format(new Date())}
+        </p>
+        <h2 className="mt-1.5 text-[26px] font-semibold leading-tight tracking-[-0.02em] text-ink-900">
+          Welcome back, {displayName}
+        </h2>
+        <p className="mt-1.5 max-w-xl text-[13px] leading-relaxed text-ink-500">
+          {isAdviser
+            ? 'Your consultation schedule and every action item still open across your groups.'
+            : 'Where your capstone stands today — sessions, advisers and everything still open.'}
+        </p>
       </div>
+
     </section>
   );
 }
 
 /*
- * Each tone is an icon chip plus the hairline that tops the card, so the three
- * tiles are told apart by a 3px rule rather than by three loud backgrounds.
+ * The icon chip is the only colour on a tile, and it is the status colour --
+ * so three tiles are told apart by one small mark each rather than by three
+ * competing backgrounds and three gradient rules.
  */
 const TONES = {
-  indigo: { chip: 'bg-indigo-50 text-indigo-600', rule: 'from-indigo-400 to-indigo-600' },
-  amber: { chip: 'bg-gold-100 text-gold-700', rule: 'from-gold-300 to-gold-500' },
-  emerald: { chip: 'bg-emerald-50 text-emerald-600', rule: 'from-emerald-400 to-emerald-600' },
+  indigo: 'bg-brand-50 text-brand-700',
+  amber: 'bg-gold-50 text-gold-600',
+  emerald: 'bg-emerald-50 text-emerald-600',
 };
 
 function StatTile({ icon: Icon, tone, label, value, hint, highlighted = false, delay = 0 }) {
-  const { chip, rule } = TONES[tone];
-
   return (
     <article
       style={{ '--delay': `${delay}ms` }}
-      className={`animate-rise group relative overflow-hidden rounded-2xl bg-white p-5 shadow-card transition duration-300 hover:-translate-y-1 hover:shadow-raised ${
-        highlighted ? 'ring-2 ring-brand-600' : 'ring-1 ring-ink-100 hover:ring-ink-200'
+      className={`animate-rise rounded-xl border bg-white p-4 transition-colors ${
+        highlighted ? 'border-brand-200 bg-brand-50/40' : 'border-ink-200 hover:border-ink-300'
       }`}
     >
-      <span
-        aria-hidden="true"
-        className={`absolute inset-x-0 top-0 h-1 bg-gradient-to-r ${
-          highlighted ? 'from-brand-500 to-brand-700' : rule
-        }`}
-      />
-
-      <div className="flex items-start justify-between gap-3">
-        <span
-          className={`flex h-11 w-11 items-center justify-center rounded-xl transition-transform duration-300 group-hover:scale-110 ${chip}`}
-        >
-          <Icon className="h-5 w-5" aria-hidden="true" />
+      <div className="flex items-center justify-between gap-3">
+        <span className="flex items-center gap-2 text-[12px] font-medium text-ink-500">
+          <span className={`flex h-6 w-6 items-center justify-center rounded-md ${TONES[tone]}`}>
+            <Icon className="h-3.5 w-3.5" aria-hidden="true" />
+          </span>
+          {label}
         </span>
         {highlighted ? (
-          <span className="rounded-full bg-brand-50 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-brand-700">
+          <span className="rounded-full bg-brand-100 px-2 py-0.5 text-[10px] font-semibold text-brand-800">
             Up next
           </span>
         ) : null}
       </div>
-      <p className="mt-4 text-2xl font-extrabold tracking-tight text-ink-900">{value}</p>
-      <p className="mt-0.5 text-sm font-semibold text-ink-600">{label}</p>
-      <p className="mt-1 truncate text-xs text-ink-400">{hint}</p>
+      <p className="tnum mt-3 text-[22px] font-semibold leading-none tracking-[-0.02em] text-ink-900">
+        {value}
+      </p>
+      <p className="mt-2 truncate text-[12px] text-ink-500">{hint}</p>
     </article>
   );
 }
 
-/**
- * Opens the thread for one consultation, carrying its unread count.
- *
- * On a request card this is the reply channel a decline never had: the
- * adviser's reason is one sentence with nowhere to answer it, so "try Thursday"
- * used to end the conversation rather than continue it.
- */
 function ThreadButton({ unread = 0, onClick, label = 'Messages' }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="inline-flex items-center gap-1.5 rounded-xl border border-ink-200 px-3.5 py-2 text-xs font-bold text-ink-700 transition hover:border-brand-300 hover:bg-brand-50/50 hover:text-brand-700"
+      className="inline-flex items-center gap-1.5 rounded-lg border border-ink-200 px-3.5 py-2 text-xs font-semibold text-ink-700 transition hover:border-brand-300 hover:bg-brand-50/50 hover:text-brand-700"
     >
       <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
       {label}
       {unread > 0 ? (
-        <span className="ml-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-brand-600 px-1 text-[9px] font-bold text-white">
+        <span className="ml-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-brand-600 px-1 text-[9px] font-semibold text-white">
           {unread > 9 ? '9+' : unread}
         </span>
       ) : null}
@@ -1252,7 +1225,7 @@ function ThreadButton({ unread = 0, onClick, label = 'Messages' }) {
 function SectionHeading({ title, action }) {
   return (
     <div className="mb-4 flex items-center justify-between gap-3">
-      <h2 className="text-base font-extrabold tracking-tight text-ink-900">{title}</h2>
+      <h2 className="text-base font-bold tracking-tight text-ink-900">{title}</h2>
       {action}
     </div>
   );
@@ -1278,8 +1251,8 @@ function ConsultationCard({
 
   if (!consultation) {
     return (
-      <div className="rounded-2xl border border-dashed border-ink-300 bg-white px-6 py-12 text-center shadow-card">
-        <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-ink-100">
+      <div className="rounded-xl border border-dashed border-ink-300 bg-ink-50/50 px-6 py-12 text-center">
+        <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-xl bg-ink-100">
           <CalendarDays className="h-7 w-7 text-ink-400" aria-hidden="true" />
         </span>
         <p className="mt-4 font-bold text-ink-900">No upcoming consultation</p>
@@ -1291,7 +1264,7 @@ function ConsultationCard({
         <button
           type="button"
           onClick={onBook}
-          className="mt-5 inline-flex items-center gap-2 rounded-xl bg-brand-700 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-brand-800"
+          className="mt-5 inline-flex items-center gap-2 rounded-lg bg-brand-700 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-brand-800"
         >
           <CalendarPlus className="h-4 w-4" aria-hidden="true" />
           {isAdviser ? 'Schedule a session' : 'Book consultation'}
@@ -1303,23 +1276,23 @@ function ConsultationCard({
   const meetingDate = new Date(consultation.meeting_date);
 
   return (
-    <article className="animate-rise rounded-2xl bg-white p-6 shadow-card ring-1 ring-ink-100 transition duration-300 hover:shadow-raised">
+    <article className="animate-rise rounded-xl bg-white p-6 border border-ink-200 transition-colors hover:border-ink-300">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-xs font-bold uppercase tracking-widest text-brand-600">
+          <p className="truncate text-[12px] font-medium text-ink-500">
             {consultation.group_name || 'Consultation'}
           </p>
-          <h3 className="mt-1.5 text-xl font-extrabold tracking-tight text-ink-900">
+          <h3 className="mt-1.5 text-xl font-bold tracking-tight text-ink-900">
             {consultation.topic}
           </h3>
         </div>
-        <span className="rounded-full bg-brand-50 px-3 py-1.5 text-xs font-bold text-brand-700">
+        <span className="rounded-full bg-brand-50 px-3 py-1.5 text-xs font-semibold text-brand-700">
           {countdown}
         </span>
       </div>
 
-      <dl className="mt-5 grid gap-3 sm:grid-cols-3">
-        <Detail icon={CalendarDays} label="Date" value={dateFormatter.format(meetingDate)} />
+      <dl className="mt-5 grid gap-4 rounded-lg border border-ink-200 bg-ink-50/60 px-4 py-3.5 sm:grid-cols-3">
+        <Detail icon={CalendarDays} label="Date" value={detailDateFormatter.format(meetingDate)} />
         <Detail icon={Clock} label="Time" value={timeFormatter.format(meetingDate)} />
         <Detail
           icon={MapPin}
@@ -1355,7 +1328,7 @@ function ConsultationCard({
           }}
         />
       ) : (
-        <div className="mt-4 flex flex-wrap items-center gap-2.5 border-t border-ink-100 pt-4">
+        <div className="mt-4 flex flex-wrap items-center gap-2.5 border-t border-ink-200 pt-4">
         <ThreadButton unread={unread} onClick={() => onOpenThread(consultation.id)} />
 
         {!consultation.proposal_live ? (
@@ -1363,7 +1336,7 @@ function ConsultationCard({
             <button
               type="button"
               onClick={() => onPropose(consultation)}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-ink-200 px-3.5 py-2 text-xs font-bold text-ink-700 transition hover:border-gold-300 hover:bg-gold-50 hover:text-gold-800"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-ink-200 px-3.5 py-2 text-xs font-semibold text-ink-700 transition hover:border-gold-300 hover:bg-gold-50 hover:text-gold-800"
             >
               <CalendarClock className="h-3.5 w-3.5" aria-hidden="true" />
               Move
@@ -1371,7 +1344,7 @@ function ConsultationCard({
             <button
               type="button"
               onClick={() => setCancelling(true)}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-ink-200 px-3.5 py-2 text-xs font-bold text-ink-700 transition hover:border-rose-200 hover:text-rose-700"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-ink-200 px-3.5 py-2 text-xs font-semibold text-ink-700 transition hover:border-rose-200 hover:text-rose-700"
             >
               <X className="h-3.5 w-3.5" aria-hidden="true" />
               Cancel
@@ -1384,7 +1357,7 @@ function ConsultationCard({
           <button
             type="button"
             onClick={() => onWrapUp(consultation.id)}
-            className="ml-auto inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-emerald-700 active:scale-[0.99]"
+            className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-700 active:scale-[0.99]"
           >
             <ClipboardList className="h-3.5 w-3.5" aria-hidden="true" />
             Wrap up
@@ -1398,12 +1371,12 @@ function ConsultationCard({
 
 function Detail({ icon: Icon, label, value }) {
   return (
-    <div className="rounded-xl bg-ink-50 p-3.5 ring-1 ring-ink-100 transition hover:bg-brand-50/50 hover:ring-brand-100">
-      <dt className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-ink-400">
-        <Icon className="h-3.5 w-3.5" aria-hidden="true" />
-        {label}
-      </dt>
-      <dd className="mt-1 text-sm font-bold text-ink-800">{value}</dd>
+    <div className="flex min-w-0 items-start gap-2.5">
+      <Icon className="mt-0.5 h-4 w-4 shrink-0 text-ink-400" aria-hidden="true" />
+      <div className="min-w-0">
+        <dt className="text-[11px] text-ink-500">{label}</dt>
+        <dd className="truncate text-[13px] font-medium text-ink-900">{value}</dd>
+      </div>
     </div>
   );
 }
@@ -1430,8 +1403,8 @@ function ProposalBanner({ item, myId, busy, onDecide }) {
 
   if (mine) {
     return (
-      <div className="mt-4 rounded-xl border border-gold-200 bg-gold-50 px-3.5 py-3">
-        <p className="flex items-center gap-1.5 text-xs font-bold text-gold-800">
+      <div className="mt-4 rounded-lg border border-gold-200 bg-gold-50 px-3.5 py-3">
+        <p className="flex items-center gap-1.5 text-xs font-semibold text-gold-800">
           <Hourglass className="h-3.5 w-3.5" aria-hidden="true" />
           Waiting for them to confirm {dateFormatter.format(when)} at{' '}
           {timeFormatter.format(when)}
@@ -1444,12 +1417,12 @@ function ProposalBanner({ item, myId, busy, onDecide }) {
   }
 
   return (
-    <div className="mt-4 rounded-xl border border-gold-300 bg-gold-50 px-3.5 py-3.5">
-      <p className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-gold-800">
+    <div className="mt-4 rounded-lg border border-gold-300 bg-gold-50 px-3.5 py-3.5">
+      <p className="flex items-center gap-1.5 text-[13px] font-semibold text-gold-800">
         <CalendarClock className="h-3.5 w-3.5" aria-hidden="true" />
         {item.proposed_by_name || 'The other side'} suggested a different time
       </p>
-      <p className="mt-1.5 text-sm font-extrabold text-ink-900">
+      <p className="mt-1.5 text-sm font-semibold text-ink-900">
         {dateFormatter.format(when)} at {timeFormatter.format(when)}
       </p>
       {item.proposed_note ? (
@@ -1461,7 +1434,7 @@ function ProposalBanner({ item, myId, busy, onDecide }) {
           type="button"
           disabled={busy}
           onClick={() => onDecide(item, 'declined')}
-          className="rounded-xl border border-ink-200 bg-white px-4 py-2.5 text-sm font-bold text-ink-700 transition hover:border-rose-200 hover:text-rose-700 disabled:opacity-60"
+          className="rounded-lg border border-ink-200 bg-white px-4 py-2.5 text-sm font-semibold text-ink-700 transition hover:border-rose-200 hover:text-rose-700 disabled:opacity-60"
         >
           Can&apos;t make it
         </button>
@@ -1469,7 +1442,7 @@ function ProposalBanner({ item, myId, busy, onDecide }) {
           type="button"
           disabled={busy}
           onClick={() => onDecide(item, 'accepted')}
-          className="flex items-center gap-2 rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-emerald-900/15 transition hover:bg-emerald-700 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+          className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-[13px] font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
         >
           {busy ? (
             <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
@@ -1492,8 +1465,8 @@ function InlineReason({ id, label, placeholder, confirmLabel, tone, busy, onCanc
       : 'bg-ink-800 hover:bg-ink-900';
 
   return (
-    <div className="mt-4 border-t border-ink-100 pt-4">
-      <label htmlFor={id} className="text-xs font-bold uppercase tracking-wide text-ink-600">
+    <div className="mt-4 border-t border-ink-200 pt-4">
+      <label htmlFor={id} className="text-[12px] font-medium text-ink-700">
         {label}
       </label>
       <textarea
@@ -1502,13 +1475,13 @@ function InlineReason({ id, label, placeholder, confirmLabel, tone, busy, onCanc
         value={reason}
         onChange={(event) => setReason(event.target.value)}
         placeholder={placeholder}
-        className="mt-1.5 w-full rounded-xl border border-ink-200 bg-ink-50 px-3.5 py-2.5 text-sm text-ink-900 transition placeholder:text-ink-400 focus:border-brand-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-brand-500/10"
+        className="mt-1.5 w-full rounded-lg border border-ink-200 bg-white px-3.5 py-2.5 text-[14px] text-ink-900 transition placeholder:text-ink-400 hover:border-ink-300 focus:border-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-700/15"
       />
       <div className="mt-3 flex flex-wrap justify-end gap-2.5">
         <button
           type="button"
           onClick={onCancel}
-          className="rounded-xl border border-ink-200 px-4 py-2.5 text-sm font-bold text-ink-700 transition hover:bg-ink-50"
+          className="rounded-lg border border-ink-200 px-4 py-2.5 text-sm font-semibold text-ink-700 transition hover:bg-ink-50"
         >
           Back
         </button>
@@ -1516,7 +1489,7 @@ function InlineReason({ id, label, placeholder, confirmLabel, tone, busy, onCanc
           type="button"
           disabled={busy || !reason.trim()}
           onClick={() => onConfirm(reason.trim())}
-          className={`flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold text-white transition disabled:cursor-not-allowed disabled:opacity-60 ${confirmClass}`}
+          className={`flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-60 ${confirmClass}`}
         >
           {busy ? (
             <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
@@ -1565,45 +1538,39 @@ function RequestCard({
     : declined
       ? { label: 'Declined', tone: 'bg-rose-50 text-rose-700', Icon: X }
       : proposalLive
-        ? { label: 'New time suggested', tone: 'bg-gold-100 text-gold-800', Icon: CalendarClock }
+        ? { label: 'New time suggested', tone: 'bg-gold-50 text-gold-700 ring-1 ring-gold-200', Icon: CalendarClock }
         : {
             label: isAdviser ? 'Needs your approval' : 'Waiting for approval',
-            tone: 'bg-gold-50 text-gold-700',
+            tone: 'bg-gold-50 text-gold-700 ring-1 ring-gold-200',
             Icon: Hourglass,
           };
 
   return (
     <article
-      className={`animate-rise relative overflow-hidden rounded-2xl bg-white p-5 shadow-card ring-1 transition duration-300 hover:shadow-raised ${
-        cancelled ? 'ring-ink-200' : declined ? 'ring-rose-100' : 'ring-gold-200'
+      className={`animate-rise relative overflow-hidden rounded-xl border bg-white p-5 transition-colors ${
+        cancelled ? 'border-ink-200' : declined ? 'border-rose-200' : 'border-ink-200 hover:border-ink-300'
       }`}
     >
-      <span
-        aria-hidden="true"
-        className={`absolute inset-y-0 left-0 w-1 ${
-          cancelled ? 'bg-ink-300' : declined ? 'bg-rose-400' : 'bg-gold-400'
-        }`}
-      />
 
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-xs font-bold uppercase tracking-widest text-brand-600">
+          <p className="truncate text-[12px] font-medium text-ink-500">
             {request.group_name || 'Consultation'}
           </p>
-          <h3 className="mt-1.5 text-lg font-extrabold tracking-tight text-ink-900">
+          <h3 className="mt-1.5 text-lg font-bold tracking-tight text-ink-900">
             {request.topic}
           </h3>
         </div>
         <span
-          className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-bold ${statusChip.tone}`}
+          className={`flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ${statusChip.tone}`}
         >
           <statusChip.Icon className="h-3.5 w-3.5" aria-hidden="true" />
           {statusChip.label}
         </span>
       </div>
 
-      <dl className="mt-4 grid gap-3 sm:grid-cols-3">
-        <Detail icon={CalendarDays} label="Date" value={dateFormatter.format(when)} />
+      <dl className="mt-4 grid gap-4 rounded-lg border border-ink-200 bg-ink-50/60 px-4 py-3.5 sm:grid-cols-3">
+        <Detail icon={CalendarDays} label="Date" value={detailDateFormatter.format(when)} />
         <Detail icon={Clock} label="Time" value={timeFormatter.format(when)} />
         <Detail icon={MapPin} label="Location" value={request.location || 'To be announced'} />
       </dl>
@@ -1638,14 +1605,14 @@ function RequestCard({
       </div>
 
       {declined && request.decline_reason ? (
-        <p className="mt-4 rounded-xl bg-rose-50 px-3.5 py-3 text-sm font-medium text-rose-800">
+        <p className="mt-4 rounded-lg bg-rose-50 px-3.5 py-3 text-sm font-medium text-rose-800">
           <span className="font-bold">Adviser&apos;s note: </span>
           {request.decline_reason}
         </p>
       ) : null}
 
       {cancelled && request.cancel_reason ? (
-        <p className="mt-4 rounded-xl bg-ink-100 px-3.5 py-3 text-sm font-medium text-ink-700">
+        <p className="mt-4 rounded-lg bg-ink-100 px-3.5 py-3 text-sm font-medium text-ink-700">
           <span className="font-bold">Called off: </span>
           {request.cancel_reason}
         </p>
@@ -1658,16 +1625,6 @@ function RequestCard({
           busy={busy}
           onDecide={onDecideProposal}
         />
-      ) : null}
-
-      {onOpenThread ? (
-        <div className="mt-4 flex flex-wrap items-center gap-2.5">
-          <ThreadButton
-            unread={unread}
-            onClick={() => onOpenThread(request.id)}
-            label={closed ? 'Reply' : 'Messages'}
-          />
-        </div>
       ) : null}
 
       {/* ------------------------------------------------ the decision --- */}
@@ -1693,15 +1650,22 @@ function RequestCard({
           onCancel={() => setMode(null)}
           onConfirm={(reason) => onCancel(request, reason)}
         />
-      ) : !closed && !proposalLive ? (
-        <div className="mt-4 flex flex-wrap items-center justify-end gap-2.5 border-t border-ink-100 pt-4">
-          {isAdviser && request.status === 'pending' ? (
+      ) : onOpenThread || (!closed && !proposalLive) ? (
+        <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-ink-200 pt-4">
+          {onOpenThread ? (
+            <ThreadButton
+              unread={unread}
+              onClick={() => onOpenThread(request.id)}
+              label={closed ? 'Reply' : 'Messages'}
+            />
+          ) : null}
+          {isAdviser && !closed && !proposalLive && request.status === 'pending' ? (
             <>
               <button
                 type="button"
                 disabled={busy}
                 onClick={() => setMode('declining')}
-                className="rounded-xl border border-ink-200 px-4 py-2.5 text-sm font-bold text-ink-700 transition hover:border-rose-200 hover:text-rose-700 disabled:opacity-60"
+                className="ml-auto rounded-lg border border-ink-200 px-3.5 py-2 text-[13px] font-semibold text-ink-700 transition hover:border-rose-300 hover:bg-rose-50 hover:text-rose-700 disabled:opacity-60"
               >
                 Decline
               </button>
@@ -1710,7 +1674,7 @@ function RequestCard({
                 type="button"
                 disabled={busy}
                 onClick={() => onPropose(request)}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-gold-300 bg-gold-50 px-4 py-2.5 text-sm font-bold text-gold-800 transition hover:bg-gold-100 disabled:opacity-60"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-ink-200 px-3.5 py-2 text-[13px] font-semibold text-ink-700 transition hover:border-ink-300 hover:bg-ink-50 disabled:opacity-60"
               >
                 <CalendarClock className="h-4 w-4" aria-hidden="true" />
                 Offer another time
@@ -1719,7 +1683,7 @@ function RequestCard({
                 type="button"
                 disabled={busy}
                 onClick={() => onDecide(request, 'approved')}
-                className="flex items-center gap-2 rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-emerald-900/15 transition hover:bg-emerald-700 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+                className="flex items-center gap-2 rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {busy ? (
                   <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
@@ -1732,12 +1696,12 @@ function RequestCard({
           ) : null}
 
           {/* A group that no longer needs the slot should give it back. */}
-          {!isAdviser && request.status === 'pending' ? (
+          {!isAdviser && !closed && !proposalLive && request.status === 'pending' ? (
             <button
               type="button"
               disabled={busy}
               onClick={() => setMode('cancelling')}
-              className="rounded-xl border border-ink-200 px-4 py-2.5 text-sm font-bold text-ink-700 transition hover:border-rose-200 hover:text-rose-700 disabled:opacity-60"
+              className="ml-auto rounded-lg border border-ink-200 px-3.5 py-2 text-[13px] font-semibold text-ink-700 transition hover:border-rose-300 hover:bg-rose-50 hover:text-rose-700 disabled:opacity-60"
             >
               Withdraw request
             </button>
@@ -1768,7 +1732,7 @@ function RequestsView({
   return (
     <div className="animate-rise">
       <div className="mb-6">
-        <h1 className="text-2xl font-extrabold tracking-tight text-ink-900">
+        <h1 className="text-2xl font-bold tracking-tight text-ink-900">
           {isAdviser ? 'Consultation requests' : 'My requests'}
         </h1>
         <p className="mt-1 text-sm text-ink-500">
@@ -1781,12 +1745,12 @@ function RequestsView({
       {loading ? (
         <div className="space-y-4">
           {[0, 1].map((key) => (
-            <div key={key} className="h-56 skeleton rounded-2xl" />
+            <div key={key} className="h-56 skeleton rounded-xl" />
           ))}
         </div>
       ) : requests.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-ink-300 bg-white px-6 py-12 text-center">
-          <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-ink-100">
+        <div className="rounded-xl border border-dashed border-ink-300 bg-white px-6 py-12 text-center">
+          <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-xl bg-ink-100">
             <Inbox className="h-7 w-7 text-ink-400" aria-hidden="true" />
           </span>
           <p className="mt-4 font-bold text-ink-900">
@@ -1801,7 +1765,7 @@ function RequestsView({
             <button
               type="button"
               onClick={onBook}
-              className="mt-5 inline-flex items-center gap-2 rounded-xl bg-brand-700 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-brand-800"
+              className="mt-5 inline-flex items-center gap-2 rounded-lg bg-brand-700 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-brand-800"
             >
               <CalendarPlus className="h-4 w-4" aria-hidden="true" />
               Request consultation
@@ -1835,12 +1799,12 @@ function RequestsView({
 
 function MilestonePanel({ progress }) {
   return (
-    <section className="animate-rise rounded-2xl bg-white p-6 shadow-card ring-1 ring-ink-100">
+    <section className="animate-rise rounded-xl bg-white p-6 border border-ink-200">
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-base font-extrabold tracking-tight text-ink-900">
+        <h2 className="text-base font-bold tracking-tight text-ink-900">
           Capstone milestones
         </h2>
-        <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700">
+        <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
           {progress}%
         </span>
       </div>
@@ -1854,7 +1818,7 @@ function MilestonePanel({ progress }) {
         aria-label="Capstone milestone progress"
       >
         <div
-          className="h-full rounded-full bg-gradient-to-r from-brand-600 to-brand-500 transition-[width] duration-500"
+          className="h-full rounded-full bg-brand-600 transition-[width] duration-500"
           style={{ width: `${progress}%` }}
         />
       </div>
@@ -1905,16 +1869,16 @@ function MilestonePanel({ progress }) {
 }
 
 function SchedulePanel({ schedule, loading, onBook, unreadByConsultation, onOpenThread }) {
-  if (loading) return <div className="h-64 skeleton rounded-2xl" />;
+  if (loading) return <div className="h-64 skeleton rounded-xl" />;
 
   return (
-    <section className="animate-rise rounded-2xl bg-white p-6 shadow-card ring-1 ring-ink-100">
+    <section className="animate-rise rounded-xl bg-white p-6 border border-ink-200">
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-base font-extrabold tracking-tight text-ink-900">Your schedule</h2>
+        <h2 className="text-base font-bold tracking-tight text-ink-900">Your schedule</h2>
         <button
           type="button"
           onClick={onBook}
-          className="rounded-lg text-sm font-bold text-brand-700 hover:underline"
+          className="rounded-lg text-sm font-semibold text-brand-700 hover:underline"
         >
           Add
         </button>
@@ -1934,25 +1898,25 @@ function SchedulePanel({ schedule, loading, onBook, unreadByConsultation, onOpen
                 <button
                   type="button"
                   onClick={() => onOpenThread(item.id)}
-                  className="flex w-full gap-3 rounded-xl p-1 text-left transition hover:bg-ink-50"
+                  className="flex w-full gap-3 rounded-lg p-1 text-left transition hover:bg-ink-50"
                 >
-                  <div className="flex h-12 w-12 shrink-0 flex-col items-center justify-center rounded-xl bg-brand-50 leading-none">
-                    <span className="text-[10px] font-bold uppercase text-brand-600">
+                  <div className="flex h-12 w-12 shrink-0 flex-col items-center justify-center rounded-lg bg-brand-50 leading-none">
+                    <span className="text-[10px] font-semibold uppercase text-brand-600">
                       {monthFormatter.format(when)}
                     </span>
-                    <span className="text-base font-extrabold text-brand-800">
+                    <span className="text-base font-bold text-brand-800">
                       {when.getDate()}
                     </span>
                   </div>
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-bold text-ink-900">{item.topic}</p>
+                    <p className="truncate text-sm font-semibold text-ink-900">{item.topic}</p>
                     <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-ink-500">
                       <span className="font-semibold">{timeFormatter.format(when)}</span>
                       {item.group_name ? <span className="truncate">{item.group_name}</span> : null}
                     </p>
                   </div>
                   {unread > 0 ? (
-                    <span className="mt-1 flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-brand-600 px-1.5 text-[10px] font-bold text-white">
+                    <span className="mt-1 flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-brand-600 px-1.5 text-[10px] font-semibold text-white">
                       {unread > 9 ? '9+' : unread}
                     </span>
                   ) : null}
@@ -1967,11 +1931,11 @@ function SchedulePanel({ schedule, loading, onBook, unreadByConsultation, onOpen
 }
 
 function AdviserPanel({ consultation, loading }) {
-  if (loading) return <div className="h-40 skeleton rounded-2xl" />;
+  if (loading) return <div className="h-40 skeleton rounded-xl" />;
 
   return (
-    <section className="animate-rise rounded-2xl bg-white p-6 shadow-card ring-1 ring-ink-100">
-      <h2 className="text-base font-extrabold tracking-tight text-ink-900">Your adviser</h2>
+    <section className="animate-rise rounded-xl bg-white p-6 border border-ink-200">
+      <h2 className="text-base font-bold tracking-tight text-ink-900">Your adviser</h2>
 
       {consultation?.adviser_name ? (
         <div className="mt-4 flex items-center gap-3.5">
@@ -2011,7 +1975,7 @@ function TasksView({ loading, tasks, totalCount, query, onQueryChange, busyTaskI
     <div className="animate-rise">
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-extrabold tracking-tight text-ink-900">Action items</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-ink-900">Action items</h1>
           <p className="mt-1 text-sm text-ink-500">
             {query
               ? `${tasks.length} of ${totalCount} open ${totalCount === 1 ? 'task' : 'tasks'} match "${query}".`
@@ -2022,7 +1986,7 @@ function TasksView({ loading, tasks, totalCount, query, onQueryChange, busyTaskI
           <button
             type="button"
             onClick={() => onQueryChange('')}
-            className="flex items-center gap-1.5 rounded-xl border border-ink-200 bg-white px-3 py-2 text-sm font-semibold text-ink-600 transition hover:bg-ink-50"
+            className="flex items-center gap-1.5 rounded-lg border border-ink-200 bg-white px-3 py-2 text-sm font-semibold text-ink-600 transition hover:bg-ink-50"
           >
             <X className="h-4 w-4" aria-hidden="true" />
             Clear "{query}"
@@ -2033,12 +1997,12 @@ function TasksView({ loading, tasks, totalCount, query, onQueryChange, busyTaskI
       {loading ? (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {[0, 1, 2].map((key) => (
-            <div key={key} className="h-32 skeleton rounded-2xl" />
+            <div key={key} className="h-32 skeleton rounded-xl" />
           ))}
         </div>
       ) : tasks.length === 0 ? (
         query ? (
-          <div className="rounded-2xl border border-dashed border-ink-300 bg-white px-6 py-12 text-center">
+          <div className="rounded-xl border border-dashed border-ink-300 bg-white px-6 py-12 text-center">
             <Search className="mx-auto h-9 w-9 text-ink-300" aria-hidden="true" />
             <p className="mt-3 font-bold text-ink-900">No match for "{query}"</p>
             <p className="mt-1 text-sm text-ink-500">Try a different word.</p>
@@ -2064,8 +2028,8 @@ function TasksView({ loading, tasks, totalCount, query, onQueryChange, busyTaskI
 
 function EmptyTasks() {
   return (
-    <div className="rounded-2xl border border-dashed border-ink-300 bg-white px-6 py-12 text-center">
-      <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-50">
+    <div className="rounded-xl border border-dashed border-ink-300 bg-white px-6 py-12 text-center">
+      <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-xl bg-emerald-50">
         <CheckCircle2 className="h-7 w-7 text-emerald-500" aria-hidden="true" />
       </span>
       <p className="mt-4 font-bold text-ink-900">Nothing pending</p>
@@ -2085,7 +2049,7 @@ function TaskCard({ task, busy, onResolve }) {
   const overdue = due ? due < new Date(new Date().toDateString()) : false;
 
   return (
-    <article className="animate-rise flex flex-col rounded-2xl bg-white p-5 shadow-card ring-1 ring-ink-100 transition duration-300 hover:-translate-y-1 hover:shadow-raised hover:ring-brand-200">
+    <article className="animate-rise flex flex-col rounded-xl bg-white p-5 border border-ink-200 transition-colors hover:border-ink-300">
       <div className="flex items-start gap-3">
         <button
           type="button"
@@ -2106,12 +2070,12 @@ function TaskCard({ task, busy, onResolve }) {
       </div>
 
       {task.consultation_topic ? (
-        <span className="mt-3 w-fit max-w-full truncate rounded-full bg-ink-100 px-2.5 py-1 text-[11px] font-bold text-ink-600">
+        <span className="mb-4 mt-3 w-fit max-w-full truncate rounded-full bg-ink-100 px-2.5 py-1 text-[11px] font-medium text-ink-600">
           {task.consultation_topic}
         </span>
       ) : null}
 
-      <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-ink-100 pt-3 text-xs font-medium text-ink-500">
+      <div className="mt-auto flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-ink-200 pt-3 text-xs font-medium text-ink-500">
         {due ? (
           <span
             className={`flex items-center gap-1 font-bold ${
@@ -2156,17 +2120,17 @@ function ProfileView({ profile, onSignOut }) {
 
   return (
     <div className="animate-rise max-w-3xl">
-      <h1 className="text-2xl font-extrabold tracking-tight text-ink-900">My profile</h1>
+      <h1 className="text-2xl font-bold tracking-tight text-ink-900">My profile</h1>
       <p className="mt-1 text-sm text-ink-500">The details you registered with.</p>
 
-      <section className="mt-6 overflow-hidden rounded-2xl bg-white shadow-card ring-1 ring-ink-100">
-        <div className="flex flex-wrap items-center gap-4 bg-gradient-to-br from-brand-700 to-brand-900 px-6 py-7">
-          <Avatar name={profile.full_name || profile.email} size="lg" />
+      <section className="mt-6 overflow-hidden rounded-xl bg-white border border-ink-200">
+        <div className="flex flex-wrap items-center gap-4 bg-brand-700 px-6 py-6">
+          <Avatar name={profile.full_name || profile.email} size="lg" onBrand />
           <div className="min-w-0">
-            <p className="truncate text-lg font-extrabold text-white">
+            <p className="truncate text-[17px] font-semibold tracking-tight text-white">
               {profile.full_name || profile.email}
             </p>
-            <p className="truncate text-sm text-brand-100/85">
+            <p className="truncate text-[13px] text-brand-100">
               {(profile.role === 'adviser'
                 ? [profile.faculty_position || 'Adviser', profile.department]
                 : [profile.year_level, profile.course]
@@ -2176,7 +2140,7 @@ function ProfileView({ profile, onSignOut }) {
             </p>
           </div>
           <div className="ml-auto flex flex-wrap items-center gap-2">
-            <span className="flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1.5 text-xs font-bold text-white ring-1 ring-white/25">
+            <span className="flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/25">
               {profile.role === 'adviser' ? (
                 <Briefcase className="h-3.5 w-3.5" aria-hidden="true" />
               ) : (
@@ -2185,7 +2149,7 @@ function ProfileView({ profile, onSignOut }) {
               {profile.role === 'adviser' ? 'Adviser' : 'Student'}
             </span>
             {profile.email_verified_at ? (
-              <span className="flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1.5 text-xs font-bold text-white ring-1 ring-white/25">
+              <span className="flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/25">
                 <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
                 Email verified
               </span>
@@ -2193,14 +2157,12 @@ function ProfileView({ profile, onSignOut }) {
           </div>
         </div>
 
-        <dl className="divide-y divide-ink-100">
+        <dl className="divide-y divide-ink-200">
           {rows.map(([label, value, capitalized]) => (
             <div key={label} className="flex flex-wrap gap-2 px-6 py-4">
-              <dt className="w-40 text-xs font-bold uppercase tracking-wide text-ink-400">
-                {label}
-              </dt>
+              <dt className="w-40 text-[13px] text-ink-500">{label}</dt>
               <dd
-                className={`flex-1 break-all text-sm font-semibold text-ink-800 ${
+                className={`flex-1 break-all text-[13px] font-medium text-ink-900 ${
                   capitalized ? 'capitalize' : ''
                 }`}
               >
@@ -2214,7 +2176,7 @@ function ProfileView({ profile, onSignOut }) {
       <button
         type="button"
         onClick={onSignOut}
-        className="mt-6 inline-flex items-center gap-2 rounded-xl border border-ink-200 bg-white px-4 py-2.5 text-sm font-bold text-ink-700 transition hover:border-brand-200 hover:text-brand-700"
+        className="mt-6 inline-flex items-center gap-2 rounded-lg border border-ink-200 bg-white px-4 py-2.5 text-sm font-semibold text-ink-700 transition hover:border-brand-200 hover:text-brand-700"
       >
         <LogOut className="h-4 w-4" aria-hidden="true" />
         Sign out

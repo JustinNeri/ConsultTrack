@@ -93,7 +93,7 @@ export default function RecordView({ token, isAdviser, profile }) {
       {/* --------------------------------------------- controls (never print) */}
       <div className="no-print mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-extrabold tracking-tight text-ink-900">
+          <h1 className="text-2xl font-bold tracking-tight text-ink-900">
             Consultation record
           </h1>
           <p className="mt-1 max-w-2xl text-sm leading-relaxed text-ink-500">
@@ -107,7 +107,7 @@ export default function RecordView({ token, isAdviser, profile }) {
             <div>
               <label
                 htmlFor="record-group"
-                className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-ink-600"
+                className="mb-1.5 block text-[12px] font-medium text-ink-700"
               >
                 Group
               </label>
@@ -115,7 +115,7 @@ export default function RecordView({ token, isAdviser, profile }) {
                 id="record-group"
                 value={selected}
                 onChange={(event) => setSelected(event.target.value)}
-                className="rounded-xl border border-ink-200 bg-white px-3.5 py-2.5 text-sm font-medium text-ink-900 transition focus:border-brand-500 focus:outline-none focus:ring-4 focus:ring-brand-500/10"
+                className="rounded-lg border border-ink-200 bg-white px-3.5 py-2.5 text-sm font-medium text-ink-900 transition focus:border-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-700/15"
               >
                 {groups.map((group) => (
                   <option key={group.group_name} value={group.group_name}>
@@ -130,7 +130,7 @@ export default function RecordView({ token, isAdviser, profile }) {
             type="button"
             onClick={() => window.print()}
             disabled={!record || loading}
-            className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-brand-700 to-brand-600 px-4 py-2.5 text-sm font-bold text-white shadow-lg shadow-brand-900/20 transition hover:from-brand-800 hover:to-brand-700 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none"
+            className="inline-flex items-center gap-2 rounded-lg bg-brand-700 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-brand-600 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none"
           >
             <Printer className="h-4 w-4" aria-hidden="true" />
             Print / save as PDF
@@ -141,7 +141,7 @@ export default function RecordView({ token, isAdviser, profile }) {
       {error ? (
         <div
           role="alert"
-          className="no-print mb-5 flex items-start gap-2.5 rounded-2xl border border-rose-100 bg-rose-50 px-4 py-3.5 text-sm font-medium text-rose-700"
+          className="no-print mb-5 flex items-start gap-2.5 rounded-xl border border-rose-100 bg-rose-50 px-4 py-3.5 text-sm font-medium text-rose-700"
         >
           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
           <span className="flex-1">{error}</span>
@@ -149,7 +149,7 @@ export default function RecordView({ token, isAdviser, profile }) {
       ) : null}
 
       {loadingGroups || loading ? (
-        <div className="skeleton h-96 rounded-2xl" />
+        <div className="skeleton h-96 rounded-xl" />
       ) : !record ? (
         <EmptyRecord isAdviser={isAdviser} hasGroups={groups.length > 0} />
       ) : (
@@ -166,16 +166,16 @@ function RecordSheet({ record, completed }) {
   const last = record.sessions[record.sessions.length - 1];
 
   return (
-    <article className="print-sheet rounded-2xl bg-white p-8 shadow-card ring-1 ring-ink-100 sm:p-10">
+    <article className="print-sheet rounded-xl bg-white p-8 border border-ink-200 sm:p-10">
       {/* --------------------------------------------------------- letterhead */}
       <header className="border-b-2 border-ink-900 pb-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="flex items-center gap-3">
-            <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-brand-800 text-white">
+            <span className="flex h-11 w-11 items-center justify-center rounded-lg bg-brand-800 text-white">
               <GraduationCap className="h-6 w-6" aria-hidden="true" />
             </span>
             <div>
-              <p className="text-sm font-extrabold tracking-tight text-ink-900">
+              <p className="text-sm font-semibold tracking-tight text-ink-900">
                 Holy Angel University
               </p>
               <p className="text-xs font-medium text-ink-500">Capstone consultation record</p>
@@ -186,7 +186,7 @@ function RecordSheet({ record, completed }) {
           </p>
         </div>
 
-        <h2 className="mt-5 text-2xl font-extrabold tracking-tight text-ink-900">
+        <h2 className="mt-5 text-2xl font-bold tracking-tight text-ink-900">
           {record.group}
         </h2>
 
@@ -208,7 +208,7 @@ function RecordSheet({ record, completed }) {
 
         {record.members.length > 0 ? (
           <div className="mt-3 flex flex-wrap items-start gap-2 text-sm">
-            <span className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-ink-400">
+            <span className="flex items-center gap-1.5 text-[12px] font-medium text-ink-500">
               <Users className="h-3.5 w-3.5" aria-hidden="true" />
               Members
             </span>
@@ -238,14 +238,14 @@ function RecordSheet({ record, completed }) {
         <div className="mt-8 flex flex-wrap gap-10">
           <div className="min-w-56 flex-1">
             <div className="h-10 border-b border-ink-400" />
-            <p className="mt-1.5 text-xs font-bold text-ink-700">
+            <p className="mt-1.5 text-xs font-semibold text-ink-700">
               {adviserOf(record.sessions)}
             </p>
             <p className="text-[11px] text-ink-500">Thesis adviser - signature over printed name</p>
           </div>
           <div className="min-w-40 flex-1">
             <div className="h-10 border-b border-ink-400" />
-            <p className="mt-1.5 text-xs font-bold text-ink-700">Date</p>
+            <p className="mt-1.5 text-xs font-semibold text-ink-700">Date</p>
           </div>
         </div>
       </footer>
@@ -262,7 +262,7 @@ function SessionEntry({ session, index }) {
   return (
     <li className="print-session break-inside-avoid py-5">
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-        <h3 className="text-base font-extrabold tracking-tight text-ink-900">
+        <h3 className="text-base font-bold tracking-tight text-ink-900">
           <span className="mr-2 text-ink-400">#{index}</span>
           {session.topic}
         </h3>
@@ -274,7 +274,7 @@ function SessionEntry({ session, index }) {
 
       {/* Attendance: the three states are meaningfully different. */}
       <p className="mt-2 text-sm">
-        <span className="text-xs font-bold uppercase tracking-wide text-ink-400">Present: </span>
+        <span className="text-[12px] font-medium text-ink-500">Present: </span>
         {session.attendance.length === 0 ? (
           <span className="italic text-ink-400">not recorded</span>
         ) : (
@@ -294,7 +294,7 @@ function SessionEntry({ session, index }) {
 
       {session.minutes ? (
         <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-ink-700">
-          <span className="text-xs font-bold uppercase tracking-wide text-ink-400">
+          <span className="text-[12px] font-medium text-ink-500">
             Agreed:{' '}
           </span>
           {session.minutes}
@@ -344,7 +344,7 @@ function SessionEntry({ session, index }) {
 function SummaryFact({ label, value }) {
   return (
     <div>
-      <dt className="text-xs font-bold uppercase tracking-wide text-ink-400">{label}</dt>
+      <dt className="text-[12px] font-medium text-ink-500">{label}</dt>
       <dd className="mt-0.5 font-semibold text-ink-800">{value}</dd>
     </div>
   );
@@ -358,11 +358,11 @@ function adviserOf(sessions) {
 
 function EmptyRecord({ isAdviser, hasGroups }) {
   return (
-    <div className="no-print rounded-2xl border border-dashed border-ink-300 bg-white px-6 py-14 text-center">
-      <span className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-brand-50">
+    <div className="no-print rounded-xl border border-dashed border-ink-300 bg-white px-6 py-14 text-center">
+      <span className="mx-auto flex h-16 w-16 items-center justify-center rounded-xl bg-brand-50">
         <FileText className="h-8 w-8 text-brand-600" aria-hidden="true" />
       </span>
-      <p className="mt-4 text-lg font-extrabold tracking-tight text-ink-900">
+      <p className="mt-4 text-lg font-bold tracking-tight text-ink-900">
         Nothing to record yet
       </p>
       <p className="mx-auto mt-1.5 max-w-md text-sm leading-relaxed text-ink-500">

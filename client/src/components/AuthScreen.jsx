@@ -291,7 +291,7 @@ export default function AuthScreen({ onAuthenticated }) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-canvas px-4 py-6 sm:px-6 lg:py-10">
       <div className={`w-full transition-all duration-300 ${wide ? 'max-w-6xl' : 'max-w-5xl'}`}>
-        <div className="animate-rise overflow-hidden rounded-3xl bg-white shadow-lift ring-1 ring-ink-900/5">
+        <div className="animate-rise overflow-hidden rounded-2xl border border-ink-200 bg-white shadow-lift">
           <div className="grid lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1fr)]">
             <BrandPanel view={view} />
 
@@ -373,7 +373,7 @@ export default function AuthScreen({ onAuthenticated }) {
                     />
                     {typedRole ? (
                       <p
-                        className={`mt-2 flex items-start gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold ${
+                        className={`mt-2 flex items-start gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold ${
                           typedRole === 'adviser'
                             ? 'bg-indigo-50 text-indigo-700'
                             : 'bg-emerald-50 text-emerald-700'
@@ -451,8 +451,8 @@ export default function AuthScreen({ onAuthenticated }) {
                         onChange={(event) => handleDigitChange(index, event.target.value)}
                         onKeyDown={(event) => handleDigitKeyDown(index, event)}
                         onFocus={(event) => event.target.select()}
-                        className={`h-16 w-full rounded-2xl border-2 text-center text-2xl font-bold text-ink-900 transition focus:border-brand-600 focus:bg-white focus:outline-none disabled:opacity-60 ${
-                          digit ? 'border-brand-500 bg-white' : 'border-ink-200 bg-ink-50'
+                        className={`tnum h-14 w-full rounded-lg border text-center text-[22px] font-semibold text-ink-900 transition focus:border-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-700/15 disabled:opacity-60 ${
+                          digit ? 'border-brand-600 bg-white' : 'border-ink-200 bg-white'
                         }`}
                       />
                     ))}
@@ -460,7 +460,7 @@ export default function AuthScreen({ onAuthenticated }) {
 
                   {error ? <ErrorNote message={error} /> : null}
                   {!error && notice ? (
-                    <p className="mt-4 flex items-start gap-2 rounded-xl bg-emerald-50 px-3.5 py-3 text-sm font-medium text-emerald-700">
+                    <p className="mt-4 flex items-start gap-2 rounded-lg bg-emerald-50 px-3.5 py-3 text-sm font-medium text-emerald-700">
                       <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
                       {notice}
                     </p>
@@ -505,12 +505,12 @@ export default function AuthScreen({ onAuthenticated }) {
                 <form onSubmit={handleDetails} noValidate>
                   <FormHeading eyebrow="Step 3 of 3" title="Complete your profile" />
                   <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-ink-500">
-                    <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700">
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
                       <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
                       {email} verified
                     </span>
                     <span
-                      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-bold ${
+                      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${
                         isAdviser ? 'bg-indigo-50 text-indigo-700' : 'bg-brand-50 text-brand-700'
                       }`}
                     >
@@ -761,79 +761,66 @@ const HIGHLIGHTS = [
   },
 ];
 
+/*
+ * The sign-in panel is the first thing anyone sees of ConsultTrack, so it
+ * carries the institution: near-black ground, crimson mark, and three lines
+ * about what the product does. The blurred blobs and grid overlay it replaces
+ * were decoration standing where the proposition should be.
+ */
 function BrandPanel({ view }) {
   return (
-    <div className="relative hidden overflow-hidden bg-gradient-to-br from-brand-800 via-brand-700 to-brand-950 p-10 lg:flex lg:flex-col">
-      {/* Decorative wash - purely presentational. */}
-      <div
-        className="pointer-events-none absolute -right-16 -top-20 h-64 w-64 rounded-full bg-brand-400/30 blur-3xl"
-        aria-hidden="true"
-      />
-      <div
-        className="pointer-events-none absolute -bottom-24 -left-16 h-72 w-72 rounded-full bg-gold-400/20 blur-3xl"
-        aria-hidden="true"
-      />
-      <div
-        className="pointer-events-none absolute inset-0 opacity-[0.07]"
-        style={{
-          backgroundImage:
-            'linear-gradient(to right, white 1px, transparent 1px), linear-gradient(to bottom, white 1px, transparent 1px)',
-          backgroundSize: '36px 36px',
-        }}
-        aria-hidden="true"
-      />
-
-      <div className="relative">
-        <div className="flex items-center gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-white/15 ring-1 ring-white/25 backdrop-blur">
-            <GraduationCap className="h-6 w-6 text-white" aria-hidden="true" />
-          </div>
-          <div>
-            <p className="text-lg font-extrabold tracking-tight text-white">ConsultTrack</p>
-            <p className="text-xs font-medium text-brand-200">Holy Angel University</p>
-          </div>
-        </div>
-
-        <h2 className="mt-12 text-4xl font-extrabold leading-tight tracking-tight text-white">
-          {view === 'login' ? (
-            <>
-              Your capstone,
-              <br />
-              on schedule.
-            </>
-          ) : (
-            <>
-              Three quick steps
-              <br />
-              to get started.
-            </>
-          )}
-        </h2>
-        <p className="mt-4 max-w-sm text-sm leading-relaxed text-brand-100/90">
-          Consultation scheduling built for HAU thesis groups - one place for sessions, advisers and
-          the tasks that come out of them.
-        </p>
+    <div className="relative hidden bg-ink-950 p-10 lg:flex lg:flex-col">
+      <div className="flex items-center gap-2.5">
+        <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-700">
+          <GraduationCap className="h-5 w-5 text-white" aria-hidden="true" />
+        </span>
+        <span className="leading-tight">
+          <span className="block text-[15px] font-semibold tracking-tight text-white">
+            ConsultTrack
+          </span>
+          <span className="block text-[11px] text-ink-400">Holy Angel University</span>
+        </span>
       </div>
 
-      <ul className="relative mt-10 space-y-4">
+      <h2 className="mt-14 text-[32px] font-semibold leading-[1.15] tracking-[-0.025em] text-white">
+        {view === 'login' ? (
+          <>
+            Your capstone,
+            <br />
+            on schedule.
+          </>
+        ) : (
+          <>
+            Three quick steps
+            <br />
+            to get started.
+          </>
+        )}
+      </h2>
+      <p className="mt-4 max-w-sm text-[13px] leading-relaxed text-ink-400">
+        Consultation scheduling built for HAU thesis groups &mdash; one place for sessions,
+        advisers and the tasks that come out of them.
+      </p>
+
+      <ul className="mt-12 space-y-6">
         {HIGHLIGHTS.map(({ icon: Icon, title, body }, index) => (
           <li
             key={title}
-            style={{ '--delay': `${180 + index * 90}ms` }}
-            className="animate-rise flex gap-3 rounded-2xl bg-white/10 p-4 ring-1 ring-white/15 backdrop-blur-sm transition hover:bg-white/15"
+            style={{ '--delay': `${140 + index * 80}ms` }}
+            className="animate-rise flex gap-3.5"
           >
-            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/15 text-white">
+            <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/[0.07] text-brand-400 ring-1 ring-white/[0.08]">
               <Icon className="h-4 w-4" aria-hidden="true" />
             </span>
-            <div>
-              <p className="text-sm font-bold text-white">{title}</p>
-              <p className="mt-0.5 text-xs leading-relaxed text-brand-100/80">{body}</p>
+            <div className="min-w-0">
+              <p className="text-[13px] font-semibold text-white">{title}</p>
+              <p className="mt-1 text-[12px] leading-relaxed text-ink-400">{body}</p>
             </div>
           </li>
         ))}
       </ul>
 
-      <p className="relative mt-auto pt-10 text-xs text-brand-200/70">
+      <p className="mt-auto border-t border-white/[0.08] pt-6 text-[11px] text-ink-500">
         Built for the Holy Angel University capstone program.
       </p>
     </div>
@@ -842,14 +829,16 @@ function BrandPanel({ view }) {
 
 function MobileBrandBar() {
   return (
-    <div className="mb-8 flex items-center gap-3 lg:hidden">
-      <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-700 to-brand-900 shadow-md shadow-brand-900/20">
-        <GraduationCap className="h-6 w-6 text-white" aria-hidden="true" />
-      </div>
-      <div>
-        <p className="font-extrabold tracking-tight text-ink-900">ConsultTrack</p>
-        <p className="text-xs font-medium text-ink-500">Holy Angel University</p>
-      </div>
+    <div className="mb-8 flex items-center gap-2.5 lg:hidden">
+      <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-700">
+        <GraduationCap className="h-5 w-5 text-white" aria-hidden="true" />
+      </span>
+      <span className="leading-tight">
+        <span className="block text-[15px] font-semibold tracking-tight text-ink-900">
+          ConsultTrack
+        </span>
+        <span className="block text-[11px] text-ink-500">Holy Angel University</span>
+      </span>
     </div>
   );
 }
@@ -857,12 +846,12 @@ function MobileBrandBar() {
 /* ----------------------------------------------------------- small pieces -- */
 
 const INPUT =
-  'w-full rounded-xl border border-ink-200 bg-ink-50 px-3.5 py-3 text-sm text-ink-900 transition placeholder:text-ink-400 focus:border-brand-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-brand-500/10';
+  'w-full rounded-lg border border-ink-200 bg-white px-3.5 py-2.5 text-[14px] text-ink-900 transition placeholder:text-ink-400 hover:border-ink-300 focus:border-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-700/15';
 
 const BUTTON =
-  'mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-brand-700 to-brand-600 px-4 py-3.5 text-sm font-bold text-white shadow-lg shadow-brand-900/20 transition hover:from-brand-800 hover:to-brand-700 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none';
+  'mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-brand-700 px-4 py-2.5 text-[14px] font-semibold text-white transition hover:bg-brand-600 active:bg-brand-800 disabled:cursor-not-allowed disabled:opacity-60';
 
-const LINK = 'font-bold text-brand-700 underline-offset-2 hover:underline disabled:opacity-60';
+const LINK = 'font-semibold text-brand-700 underline-offset-2 hover:underline disabled:opacity-60';
 
 const STEP_LABELS = [
   ['email', 'Email'],
@@ -873,7 +862,7 @@ const STEP_LABELS = [
 function Steps({ view }) {
   const current = STEP_LABELS.findIndex(([key]) => key === view);
   return (
-    <ol className="mb-8 flex items-center gap-2 text-xs">
+    <ol className="mb-8 flex items-center gap-2 text-[12px]">
       {STEP_LABELS.map(([key, label], index) => (
         <li key={key} className="flex flex-1 items-center gap-2">
           <span
@@ -911,8 +900,8 @@ function StepBullet({ state, children }) {
     <span
       className={
         state === 'current'
-          ? 'flex h-6 w-6 items-center justify-center rounded-full bg-brand-700 text-[10px] font-bold text-white ring-4 ring-brand-100'
-          : 'flex h-6 w-6 items-center justify-center rounded-full bg-ink-100 text-[10px] font-bold text-ink-400'
+          ? 'flex h-6 w-6 items-center justify-center rounded-full bg-brand-700 text-[10px] font-semibold text-white ring-4 ring-brand-100'
+          : 'flex h-6 w-6 items-center justify-center rounded-full border border-ink-200 bg-white text-[10px] font-semibold text-ink-400'
       }
     >
       {children}
@@ -924,10 +913,14 @@ function FormHeading({ eyebrow, title, subtitle }) {
   return (
     <div>
       {eyebrow ? (
-        <p className="text-xs font-bold uppercase tracking-widest text-brand-600">{eyebrow}</p>
+        <p className="text-[12px] font-medium text-brand-700">{eyebrow}</p>
       ) : null}
-      <h2 className="mt-1.5 text-2xl font-extrabold tracking-tight text-ink-900">{title}</h2>
-      {subtitle ? <p className="mt-2 text-sm leading-relaxed text-ink-500">{subtitle}</p> : null}
+      <h2 className="mt-1 text-[22px] font-semibold leading-tight tracking-[-0.02em] text-ink-900">
+        {title}
+      </h2>
+      {subtitle ? (
+        <p className="mt-2 text-[13px] leading-relaxed text-ink-500">{subtitle}</p>
+      ) : null}
     </div>
   );
 }
@@ -954,7 +947,7 @@ function Field({ label, htmlFor, icon: Icon, optional = false, className = '', c
     <div className={className}>
       <label
         htmlFor={htmlFor}
-        className="mb-1.5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-ink-600"
+        className="mb-1.5 flex items-center gap-1.5 text-[12px] font-medium text-ink-700"
       >
         {Icon ? <Icon className="h-3.5 w-3.5 text-ink-400" aria-hidden="true" /> : null}
         {label}
@@ -970,7 +963,7 @@ function Field({ label, htmlFor, icon: Icon, optional = false, className = '', c
 function Legend({ children }) {
   return (
     <div className="mb-4 mt-8 flex items-center gap-3">
-      <p className="text-xs font-bold uppercase tracking-widest text-ink-400">{children}</p>
+      <p className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">{children}</p>
       <span className="h-px flex-1 bg-ink-100" />
     </div>
   );
@@ -1026,7 +1019,7 @@ function ErrorNote({ message }) {
   return (
     <p
       role="alert"
-      className="mt-4 flex items-start gap-2 rounded-xl border border-rose-100 bg-rose-50 px-3.5 py-3 text-sm font-medium text-rose-700"
+      className="mt-4 flex items-start gap-2 rounded-lg border border-rose-100 bg-rose-50 px-3.5 py-3 text-sm font-medium text-rose-700"
     >
       <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
       {message}

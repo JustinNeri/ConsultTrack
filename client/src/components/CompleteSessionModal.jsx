@@ -150,16 +150,16 @@ export default function CompleteSessionModal({ token, consultationId, onClose, o
         role="dialog"
         aria-modal="true"
         aria-labelledby="wrapup-title"
-        className="scrollbar-slim max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-t-3xl bg-white shadow-lift sm:rounded-3xl"
+        className="scrollbar-slim max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-t-3xl bg-white shadow-lift sm:rounded-2xl"
       >
         {/* ---------------------------------------------------------- header */}
         <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-ink-100 bg-white/95 px-6 py-5 backdrop-blur">
           <div className="flex gap-3.5">
-            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500 to-emerald-700 text-white shadow-lg shadow-emerald-900/25">
+            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-emerald-600 text-white ">
               <CheckCircle2 className="h-5 w-5" aria-hidden="true" />
             </span>
             <div className="min-w-0">
-              <h2 id="wrapup-title" className="text-lg font-extrabold tracking-tight text-ink-900">
+              <h2 id="wrapup-title" className="text-lg font-bold tracking-tight text-ink-900">
                 Wrap up this session
               </h2>
               {loading ? (
@@ -178,7 +178,7 @@ export default function CompleteSessionModal({ token, consultationId, onClose, o
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="shrink-0 rounded-xl p-1.5 text-ink-400 transition hover:bg-ink-100 hover:text-ink-700"
+            className="shrink-0 rounded-lg p-1.5 text-ink-400 transition hover:bg-ink-100 hover:text-ink-700"
           >
             <X className="h-5 w-5" aria-hidden="true" />
           </button>
@@ -188,7 +188,7 @@ export default function CompleteSessionModal({ token, consultationId, onClose, o
           {/* --------------------------------------------------- the minutes */}
           <label
             htmlFor="wrapup-minutes"
-            className="mb-1.5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-ink-600"
+            className="mb-1.5 flex items-center gap-1.5 text-[12px] font-medium text-ink-700"
           >
             <FileText className="h-3.5 w-3.5 text-ink-400" aria-hidden="true" />
             What was agreed
@@ -206,15 +206,15 @@ export default function CompleteSessionModal({ token, consultationId, onClose, o
           <p className="mt-1 text-right text-xs text-ink-400">{minutes.length}/5000</p>
 
           {/* ------------------------------------------------- attendance --- */}
-          <div className="mt-5 rounded-2xl bg-ink-50 p-4 ring-1 ring-ink-100">
+          <div className="mt-5 rounded-xl border border-ink-200 bg-ink-50 p-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <p className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-ink-600">
+              <p className="flex items-center gap-1.5 text-[12px] font-medium text-ink-700">
                 <Users className="h-3.5 w-3.5 text-ink-400" aria-hidden="true" />
                 Attendance
                 <span className="font-medium normal-case text-ink-400">(optional)</span>
               </p>
 
-              <label className="flex cursor-pointer items-center gap-2 text-xs font-bold text-ink-700">
+              <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-ink-700">
                 <input
                   type="checkbox"
                   checked={takeAttendance}
@@ -238,7 +238,7 @@ export default function CompleteSessionModal({ token, consultationId, onClose, o
                       const present = !absent.has(member.id);
                       return (
                         <li key={member.id}>
-                          <label className="flex cursor-pointer items-center gap-2.5 rounded-xl bg-white px-3 py-2.5 ring-1 ring-ink-200 transition hover:ring-brand-200">
+                          <label className="flex cursor-pointer items-center gap-2.5 rounded-lg bg-white px-3 py-2.5 ring-1 ring-ink-200 transition hover:ring-brand-200">
                             <input
                               type="checkbox"
                               checked={present}
@@ -260,7 +260,7 @@ export default function CompleteSessionModal({ token, consultationId, onClose, o
                               {member.full_name || member.email}
                             </span>
                             <span
-                              className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
+                              className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${
                                 present
                                   ? 'bg-emerald-50 text-emerald-700'
                                   : 'bg-rose-50 text-rose-600'
@@ -290,13 +290,13 @@ export default function CompleteSessionModal({ token, consultationId, onClose, o
           {/* ---------------------------------------------------- the tasks -- */}
           <div className="mt-5">
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <p className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-ink-600">
+              <p className="flex items-center gap-1.5 text-[12px] font-medium text-ink-700">
                 <ClipboardList className="h-3.5 w-3.5 text-ink-400" aria-hidden="true" />
                 Action items
                 <span className="font-medium normal-case text-ink-400">(optional)</span>
               </p>
               {filledTasks > 0 ? (
-                <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700">
+                <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700">
                   {filledTasks} to assign
                 </span>
               ) : null}
@@ -306,10 +306,10 @@ export default function CompleteSessionModal({ token, consultationId, onClose, o
               {tasks.map((task, index) => (
                 <li
                   key={task.key}
-                  className="rounded-2xl bg-ink-50 p-3.5 ring-1 ring-ink-100 transition focus-within:ring-brand-200"
+                  className="rounded-xl bg-ink-50 p-3.5 border border-ink-200 transition-colors focus-within:border-brand-400"
                 >
                   <div className="flex items-start gap-2">
-                    <span className="mt-3 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white text-[11px] font-bold text-ink-500 ring-1 ring-ink-200">
+                    <span className="mt-3 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white text-[11px] font-semibold text-ink-500 ring-1 ring-ink-200">
                       {index + 1}
                     </span>
 
@@ -335,7 +335,7 @@ export default function CompleteSessionModal({ token, consultationId, onClose, o
                         <div>
                           <label
                             htmlFor={`assignee-${task.key}`}
-                            className="mb-1 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-ink-500"
+                            className="mb-1 flex items-center gap-1.5 text-[12px] font-medium text-ink-500"
                           >
                             <UserRound className="h-3 w-3" aria-hidden="true" />
                             Who
@@ -360,7 +360,7 @@ export default function CompleteSessionModal({ token, consultationId, onClose, o
                         <div>
                           <label
                             htmlFor={`due-${task.key}`}
-                            className="mb-1 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-ink-500"
+                            className="mb-1 flex items-center gap-1.5 text-[12px] font-medium text-ink-500"
                           >
                             <CalendarDays className="h-3 w-3" aria-hidden="true" />
                             Due
@@ -386,7 +386,7 @@ export default function CompleteSessionModal({ token, consultationId, onClose, o
                           setTasks((prev) => prev.filter((item) => item.key !== task.key))
                         }
                         aria-label={`Remove action item ${index + 1}`}
-                        className="mt-2 shrink-0 rounded-xl p-2 text-ink-400 transition hover:bg-rose-50 hover:text-rose-600"
+                        className="mt-2 shrink-0 rounded-lg p-2 text-ink-400 transition hover:bg-rose-50 hover:text-rose-600"
                       >
                         <Trash2 className="h-4 w-4" aria-hidden="true" />
                       </button>
@@ -400,7 +400,7 @@ export default function CompleteSessionModal({ token, consultationId, onClose, o
               <button
                 type="button"
                 onClick={() => setTasks((prev) => [...prev, blankTask()])}
-                className="mt-3 inline-flex items-center gap-1.5 rounded-xl border border-dashed border-ink-300 px-3.5 py-2.5 text-sm font-bold text-ink-600 transition hover:border-brand-300 hover:bg-brand-50/40 hover:text-brand-700"
+                className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-dashed border-ink-300 px-3.5 py-2.5 text-sm font-semibold text-ink-600 transition hover:border-brand-300 hover:bg-brand-50/40 hover:text-brand-700"
               >
                 <Plus className="h-4 w-4" aria-hidden="true" />
                 Add another
@@ -411,14 +411,14 @@ export default function CompleteSessionModal({ token, consultationId, onClose, o
           {error ? (
             <p
               role="alert"
-              className="mt-4 flex items-start gap-2 rounded-xl border border-rose-100 bg-rose-50 px-3.5 py-3 text-sm font-medium text-rose-700"
+              className="mt-4 flex items-start gap-2 rounded-lg border border-rose-100 bg-rose-50 px-3.5 py-3 text-sm font-medium text-rose-700"
             >
               <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
               {error}
             </p>
           ) : null}
 
-          <p className="mt-5 rounded-xl bg-ink-50 px-4 py-3 text-xs leading-relaxed text-ink-600">
+          <p className="mt-5 rounded-lg bg-ink-50 px-4 py-3 text-xs leading-relaxed text-ink-600">
             Completing moves this session out of your upcoming schedule and into the session
             history. Action items go straight to the group&apos;s Action items screen.
           </p>
@@ -428,14 +428,14 @@ export default function CompleteSessionModal({ token, consultationId, onClose, o
             <button
               type="button"
               onClick={onClose}
-              className="rounded-xl border border-ink-200 px-4 py-3 text-sm font-bold text-ink-700 transition hover:bg-ink-50"
+              className="rounded-lg border border-ink-200 px-4 py-3 text-sm font-semibold text-ink-700 transition hover:bg-ink-50"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={submitting || loading}
-              className="flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-emerald-900/20 transition hover:from-emerald-700 hover:to-emerald-600 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none"
+              className="flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-emerald-700 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none"
             >
               {submitting ? (
                 <>
@@ -457,7 +457,7 @@ export default function CompleteSessionModal({ token, consultationId, onClose, o
 }
 
 const inputClass =
-  'w-full rounded-xl border border-ink-200 bg-white px-3.5 py-2.5 text-sm text-ink-900 transition placeholder:text-ink-400 focus:border-brand-500 focus:outline-none focus:ring-4 focus:ring-brand-500/10';
+  'w-full rounded-lg border border-ink-200 bg-white px-3.5 py-2.5 text-sm text-ink-900 transition placeholder:text-ink-400 focus:border-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-700/15';
 
 const smallInputClass =
-  'w-full rounded-lg border border-ink-200 bg-white px-3 py-2 text-xs font-medium text-ink-900 transition focus:border-brand-500 focus:outline-none focus:ring-4 focus:ring-brand-500/10';
+  'w-full rounded-lg border border-ink-200 bg-white px-3 py-2 text-xs font-medium text-ink-900 transition focus:border-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-700/15';

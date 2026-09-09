@@ -159,15 +159,15 @@ export default function ProposeTimeModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="propose-title"
-        className="scrollbar-slim max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-t-3xl bg-white shadow-lift sm:rounded-3xl"
+        className="scrollbar-slim max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-t-3xl bg-white shadow-lift sm:rounded-2xl"
       >
         <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-ink-100 bg-white/95 px-6 py-5 backdrop-blur">
           <div className="flex gap-3.5">
-            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-gold-500 to-gold-700 text-white shadow-lg shadow-gold-700/25">
+            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gold-500 text-white shadow-lg shadow-gold-700/25">
               <CalendarClock className="h-5 w-5" aria-hidden="true" />
             </span>
             <div className="min-w-0">
-              <h2 id="propose-title" className="text-lg font-extrabold tracking-tight text-ink-900">
+              <h2 id="propose-title" className="text-lg font-bold tracking-tight text-ink-900">
                 {wasRequest ? 'Offer another time' : 'Ask to move this session'}
               </h2>
               <p className="mt-0.5 text-sm text-ink-500">
@@ -181,7 +181,7 @@ export default function ProposeTimeModal({
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="shrink-0 rounded-xl p-1.5 text-ink-400 transition hover:bg-ink-100 hover:text-ink-700"
+            className="shrink-0 rounded-lg p-1.5 text-ink-400 transition hover:bg-ink-100 hover:text-ink-700"
           >
             <X className="h-5 w-5" aria-hidden="true" />
           </button>
@@ -189,11 +189,11 @@ export default function ProposeTimeModal({
 
         <form onSubmit={handleSubmit} className="px-6 py-5" noValidate>
           {/* What is being replaced. */}
-          <div className="mb-4 rounded-xl bg-ink-50 px-3.5 py-3">
-            <p className="text-[10px] font-bold uppercase tracking-wide text-ink-400">
+          <div className="mb-4 rounded-lg bg-ink-50 px-3.5 py-3">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-ink-400">
               {wasRequest ? 'They asked for' : 'Currently booked for'}
             </p>
-            <p className="mt-0.5 flex items-center gap-1.5 text-sm font-bold text-ink-800">
+            <p className="mt-0.5 flex items-center gap-1.5 text-sm font-semibold text-ink-800">
               <CalendarDays className="h-3.5 w-3.5 text-ink-400" aria-hidden="true" />
               {currentFormatter.format(new Date(consultation.meeting_date))}
             </p>
@@ -216,7 +216,7 @@ export default function ProposeTimeModal({
           ) : (
             <>
               {isAdviser ? (
-                <p className="mb-3 flex items-start gap-2 rounded-xl bg-gold-50 px-3.5 py-3 text-xs font-medium text-gold-700">
+                <p className="mb-3 flex items-start gap-2 rounded-lg bg-gold-50 px-3.5 py-3 text-xs font-medium text-gold-700">
                   <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                   You have not published consultation hours, so pick a time by hand. Publishing
                   them would let students book straight into slots that already work for you.
@@ -227,7 +227,7 @@ export default function ProposeTimeModal({
                 <div>
                   <label
                     htmlFor="propose-date"
-                    className="mb-1.5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-ink-600"
+                    className="mb-1.5 flex items-center gap-1.5 text-[12px] font-medium text-ink-700"
                   >
                     <CalendarDays className="h-3.5 w-3.5 text-ink-400" aria-hidden="true" />
                     Date
@@ -245,7 +245,7 @@ export default function ProposeTimeModal({
                 <div>
                   <label
                     htmlFor="propose-time"
-                    className="mb-1.5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-ink-600"
+                    className="mb-1.5 flex items-center gap-1.5 text-[12px] font-medium text-ink-700"
                   >
                     <Clock className="h-3.5 w-3.5 text-ink-400" aria-hidden="true" />
                     Time
@@ -266,7 +266,7 @@ export default function ProposeTimeModal({
           <div className="mt-4">
             <label
               htmlFor="propose-note"
-              className="mb-1.5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-ink-600"
+              className="mb-1.5 flex items-center gap-1.5 text-[12px] font-medium text-ink-700"
             >
               Why the change
               <span className="font-medium normal-case text-ink-400">(optional)</span>
@@ -289,14 +289,14 @@ export default function ProposeTimeModal({
           {error ? (
             <p
               role="alert"
-              className="mt-4 flex items-start gap-2 rounded-xl border border-rose-100 bg-rose-50 px-3.5 py-3 text-sm font-medium text-rose-700"
+              className="mt-4 flex items-start gap-2 rounded-lg border border-rose-100 bg-rose-50 px-3.5 py-3 text-sm font-medium text-rose-700"
             >
               <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
               {error}
             </p>
           ) : null}
 
-          <p className="mt-4 rounded-xl bg-ink-50 px-4 py-3 text-xs leading-relaxed text-ink-600">
+          <p className="mt-4 rounded-lg bg-ink-50 px-4 py-3 text-xs leading-relaxed text-ink-600">
             The slot is held for them until they answer, or until the proposed time passes.
             {wasRequest
               ? ' If they cannot make it, the request closes and they book again from your open slots.'
@@ -307,14 +307,14 @@ export default function ProposeTimeModal({
             <button
               type="button"
               onClick={onClose}
-              className="rounded-xl border border-ink-200 px-4 py-3 text-sm font-bold text-ink-700 transition hover:bg-ink-50"
+              className="rounded-lg border border-ink-200 px-4 py-3 text-sm font-semibold text-ink-700 transition hover:bg-ink-50"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={!chosen || submitting}
-              className="flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-brand-700 to-brand-600 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-brand-900/20 transition hover:from-brand-800 hover:to-brand-700 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none"
+              className="flex items-center justify-center gap-2 rounded-lg bg-brand-700 px-5 py-3 text-sm font-semibold text-white transition hover:bg-brand-600 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none"
             >
               {submitting ? (
                 <>
@@ -333,4 +333,4 @@ export default function ProposeTimeModal({
 }
 
 const inputClass =
-  'w-full rounded-xl border border-ink-200 bg-ink-50 px-3.5 py-3 text-sm text-ink-900 transition placeholder:text-ink-400 focus:border-brand-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-brand-500/10';
+  'w-full rounded-lg border border-ink-200 bg-white px-3.5 py-2.5 text-[14px] text-ink-900 transition placeholder:text-ink-400 hover:border-ink-300 focus:border-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-700/15';

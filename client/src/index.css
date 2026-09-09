@@ -3,63 +3,73 @@
 /*
  * ConsultTrack design tokens
  * --------------------------
- * Three scales and nothing else, so the app reads as one surface:
+ * The system is monochrome-first with a single identity colour, which is how
+ * the tools people keep open all day (Linear, Vercel, Stripe) stay readable
+ * after the eighth hour: the neutral carries structure, and colour is reserved
+ * for meaning.
  *
- *   brand   HAU crimson. Identity, primary actions, the shell.
- *   ink     The neutral. Warm rather than blue-grey -- next to crimson a cool
- *           slate reads as slightly dirty, a warm grey as intentional.
- *   gold    The single accent. Counts, highlights, the "look here" state.
+ *   ink     The base. A near-neutral grey with a trace of warmth so it sits
+ *           beside crimson without going blue. Structure, text, hairlines,
+ *           and the dark shell.
+ *   brand   HAU crimson (#9e2242 at 700). Identity and primary action only --
+ *           never decoration.
+ *   amber / emerald / rose  Status, and nothing else: waiting, approved,
+ *           declined. A colour that means something cannot also be a flourish.
  *
- * Status colours (emerald / amber / rose) come from Tailwind's own ramps: they
- * mean approved, waiting and declined, and inventing a private scale for three
- * fixed meanings buys nothing.
+ * Surfaces are defined by a 1px hairline first and a shadow second. Shadows
+ * here are contact shadows -- they say "this sits above that", not "this is
+ * floating".
  */
 @theme {
-  --font-sans: 'Plus Jakarta Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
 
-  --color-brand-50: #fdf3f5;
-  --color-brand-100: #fce7ec;
-  --color-brand-200: #f9ccd6;
-  --color-brand-300: #f2a3b6;
-  --color-brand-400: #e8708f;
-  --color-brand-500: #d9456c;
-  --color-brand-600: #c22a55;
-  --color-brand-700: #a11d45;
-  --color-brand-800: #871b3d;
-  --color-brand-900: #6f1a35;
-  --color-brand-950: #3f0a1b;
+  /* HAU crimson. 700 is the institutional colour and the primary action. */
+  --color-brand-50: #fdf2f4;
+  --color-brand-100: #fce7eb;
+  --color-brand-200: #f9d0da;
+  --color-brand-300: #f4a9bc;
+  --color-brand-400: #ec7897;
+  --color-brand-500: #df4a73;
+  --color-brand-600: #c72a56;
+  --color-brand-700: #9e2242;
+  --color-brand-800: #841e39;
+  --color-brand-900: #6f1c33;
+  --color-brand-950: #3e0c18;
 
-  /* Warm neutral. ink-500 and up are text; below that, surfaces and hairlines. */
-  --color-ink-50: #faf9f9;
-  --color-ink-100: #f3f1f2;
-  --color-ink-200: #e8e4e6;
-  --color-ink-300: #d5cfd2;
-  --color-ink-400: #a89fa4;
-  --color-ink-500: #7d737a;
-  --color-ink-600: #5f565c;
-  --color-ink-700: #4a4247;
-  --color-ink-800: #322c30;
-  --color-ink-900: #1f1a1d;
+  /* The neutral. 400 and up are text; below that, surfaces and hairlines. */
+  --color-ink-50: #fafafa;
+  --color-ink-100: #f4f3f5;
+  --color-ink-200: #e8e6ea;
+  --color-ink-300: #d5d2d7;
+  --color-ink-400: #a3a0a7;
+  --color-ink-500: #757179;
+  --color-ink-600: #57535a;
+  --color-ink-700: #423f46;
+  --color-ink-800: #2a272d;
+  --color-ink-900: #17151a;
+  --color-ink-950: #0e0d11;
 
-  --color-gold-50: #fffaeb;
-  --color-gold-100: #fdf0c8;
-  --color-gold-200: #fbdf8c;
-  --color-gold-300: #f8c750;
-  --color-gold-400: #f5ae28;
-  --color-gold-500: #ef8d0d;
-  --color-gold-600: #d36a08;
-  --color-gold-700: #af4b0b;
+  /* Amber. Status only: a decision still waiting on somebody. */
+  --color-gold-50: #fffbeb;
+  --color-gold-100: #fef3c7;
+  --color-gold-200: #fde68a;
+  --color-gold-300: #fcd34d;
+  --color-gold-400: #fbbf24;
+  --color-gold-500: #f59e0b;
+  --color-gold-600: #d97706;
+  --color-gold-700: #b45309;
 
-  /* Page ground behind the rounded app shell. */
-  --color-canvas: #eeecf0;
+  /* Page ground behind the app shell. */
+  --color-canvas: #f4f3f5;
 
   /*
-   * Three shadow depths, each a tight contact shadow plus a wide soft one --
-   * a single large blur reads as fog, the pair reads as a lifted card.
+   * Contact shadows. Each is a tight 1px seat plus one soft spread; the alpha
+   * stays low because the hairline, not the shadow, is what separates a card
+   * from the page.
    */
-  --shadow-card: 0 1px 2px rgb(31 26 29 / 0.05), 0 8px 24px -14px rgb(31 26 29 / 0.16);
-  --shadow-raised: 0 1px 3px rgb(31 26 29 / 0.06), 0 14px 32px -16px rgb(31 26 29 / 0.24);
-  --shadow-lift: 0 2px 6px rgb(31 26 29 / 0.06), 0 28px 60px -24px rgb(31 26 29 / 0.34);
+  --shadow-card: 0 1px 2px rgb(23 21 26 / 0.04), 0 1px 3px rgb(23 21 26 / 0.05);
+  --shadow-raised: 0 1px 2px rgb(23 21 26 / 0.04), 0 4px 12px -3px rgb(23 21 26 / 0.09);
+  --shadow-lift: 0 1px 3px rgb(23 21 26 / 0.05), 0 16px 40px -12px rgb(23 21 26 / 0.18);
 }
 
 html,
@@ -70,23 +80,35 @@ body,
 
 body {
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
   background-color: var(--color-canvas);
-  /* Two faint crimson washes so the ground behind the shell is not flat grey. */
-  background-image:
-    radial-gradient(52rem 32rem at 12% -8%, rgb(194 42 85 / 0.09), transparent 60%),
-    radial-gradient(44rem 28rem at 92% 6%, rgb(245 174 40 / 0.08), transparent 62%);
-  background-attachment: fixed;
+  color: var(--color-ink-900);
+  /*
+   * cv11 gives Inter the single-storey 'a'-free forms that keep numerals and
+   * lowercase legible at 12-13px; ss01 tightens the punctuation. Both matter
+   * more here than anywhere else, because most of this UI is small text.
+   */
+  font-feature-settings: 'cv11', 'ss01';
+  font-variation-settings: normal;
+}
+
+/*
+ * Tabular numerals wherever figures stack or tick: counts, countdowns, code
+ * digits, times. Proportional numerals make a changing number jitter.
+ */
+.tnum {
+  font-variant-numeric: tabular-nums;
 }
 
 /* Consistent focus ring for every interactive element. */
 :where(button, a, input, select, textarea):focus-visible {
-  outline: 2px solid var(--color-brand-600);
+  outline: 2px solid var(--color-brand-700);
   outline-offset: 2px;
-  border-radius: 0.5rem;
+  border-radius: 0.375rem;
 }
 
-/* Slim scrollbars inside panels so the rounded shell keeps its shape. */
+/* Slim scrollbars inside panels so the shell keeps its shape. */
 .scrollbar-slim {
   scrollbar-width: thin;
   scrollbar-color: var(--color-ink-300) transparent;
@@ -105,27 +127,15 @@ body {
 
 /* ------------------------------------------------------------- motion --- */
 
-@keyframes float-slow {
-  0%,
-  100% {
-    transform: translateY(0);
-  }
-  50% {
-    transform: translateY(-10px);
-  }
-}
-.animate-float {
-  animation: float-slow 6s ease-in-out infinite;
-}
-
 /*
- * Panels fade up as they mount. --delay staggers a group so a dashboard resolves
- * in reading order instead of snapping in all at once.
+ * Panels fade up as they mount. --delay staggers a group so a dashboard
+ * resolves in reading order instead of snapping in all at once. The distance
+ * is deliberately short: 6px reads as settling, 20px reads as animation.
  */
 @keyframes rise {
   from {
     opacity: 0;
-    transform: translateY(10px);
+    transform: translateY(6px);
   }
   to {
     opacity: 1;
@@ -133,7 +143,7 @@ body {
   }
 }
 .animate-rise {
-  animation: rise 0.45s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation: rise 0.35s cubic-bezier(0.22, 1, 0.36, 1) backwards;
   animation-delay: var(--delay, 0ms);
 }
 
@@ -146,7 +156,7 @@ body {
 .skeleton {
   position: relative;
   overflow: hidden;
-  background-color: var(--color-ink-200);
+  background-color: var(--color-ink-100);
 }
 .skeleton::after {
   content: '';
@@ -156,32 +166,14 @@ body {
   background-image: linear-gradient(
     90deg,
     transparent,
-    rgb(255 255 255 / 0.65),
+    rgb(255 255 255 / 0.7),
     transparent
   );
   animation: shimmer 1.6s infinite;
 }
 
-/* Draws attention to a count the moment it changes. */
-@keyframes pulse-ring {
-  0% {
-    box-shadow: 0 0 0 0 rgb(245 174 40 / 0.55);
-  }
-  70% {
-    box-shadow: 0 0 0 7px rgb(245 174 40 / 0);
-  }
-  100% {
-    box-shadow: 0 0 0 0 rgb(245 174 40 / 0);
-  }
-}
-.animate-ping-badge {
-  animation: pulse-ring 2.4s ease-out infinite;
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .animate-float,
   .animate-rise,
-  .animate-ping-badge,
   .skeleton::after {
     animation: none;
   }
@@ -253,9 +245,7 @@ body {
   }
 
   /* Entrance animations must not leave anything mid-fade on paper. */
-  .animate-rise,
-  .animate-float,
-  .animate-ping-badge {
+  .animate-rise {
     animation: none !important;
     opacity: 1 !important;
     transform: none !important;

@@ -95,7 +95,7 @@ export default function AvailabilityView({ token, onSignOut, onHoursChanged }) {
     <div className="animate-rise">
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-extrabold tracking-tight text-ink-900">
+          <h1 className="text-2xl font-bold tracking-tight text-ink-900">
             Consultation hours
           </h1>
           <p className="mt-1 max-w-2xl text-sm leading-relaxed text-ink-500">
@@ -107,7 +107,7 @@ export default function AvailabilityView({ token, onSignOut, onHoursChanged }) {
           <button
             type="button"
             onClick={() => setAdding(true)}
-            className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-brand-700 to-brand-600 px-4 py-2.5 text-sm font-bold text-white shadow-lg shadow-brand-900/20 transition hover:from-brand-800 hover:to-brand-700 active:scale-[0.99]"
+            className="inline-flex items-center gap-2 rounded-lg bg-brand-700 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-brand-600 active:scale-[0.99]"
           >
             <Plus className="h-4 w-4" aria-hidden="true" />
             Add hours
@@ -118,7 +118,7 @@ export default function AvailabilityView({ token, onSignOut, onHoursChanged }) {
       {error ? (
         <div
           role="alert"
-          className="mb-5 flex items-start gap-2.5 rounded-2xl border border-rose-100 bg-rose-50 px-4 py-3.5 text-sm font-medium text-rose-700"
+          className="mb-5 flex items-start gap-2.5 rounded-xl border border-rose-100 bg-rose-50 px-4 py-3.5 text-sm font-medium text-rose-700"
         >
           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
           <span className="flex-1">{error}</span>
@@ -128,7 +128,7 @@ export default function AvailabilityView({ token, onSignOut, onHoursChanged }) {
       {notice ? (
         <div
           role="status"
-          className="mb-5 flex items-start gap-2.5 rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3.5 text-sm font-medium text-emerald-800"
+          className="mb-5 flex items-start gap-2.5 rounded-xl border border-emerald-100 bg-emerald-50 px-4 py-3.5 text-sm font-medium text-emerald-800"
         >
           <CalendarClock className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
           <span className="flex-1">{notice}</span>
@@ -165,7 +165,7 @@ export default function AvailabilityView({ token, onSignOut, onHoursChanged }) {
       ) : null}
 
       {loading ? (
-        <div className="skeleton h-64 rounded-2xl" />
+        <div className="skeleton h-64 rounded-xl" />
       ) : blocks.length === 0 ? (
         <EmptyHours onAdd={() => setAdding(true)} showButton={!adding} />
       ) : (
@@ -173,7 +173,7 @@ export default function AvailabilityView({ token, onSignOut, onHoursChanged }) {
           <WeekGrid blocks={blocks} />
 
           <div className="mt-6 flex items-center justify-between gap-3">
-            <h2 className="text-base font-extrabold tracking-tight text-ink-900">
+            <h2 className="text-base font-bold tracking-tight text-ink-900">
               Published blocks
             </h2>
             <p className="text-xs font-semibold text-ink-500">
@@ -218,10 +218,10 @@ function WeekGrid({ blocks }) {
   }, [blocks]);
 
   return (
-    <section className="overflow-hidden rounded-2xl bg-white shadow-card ring-1 ring-ink-100">
+    <section className="overflow-hidden rounded-xl bg-white border border-ink-200">
       <div className="flex items-center gap-2 border-b border-ink-100 px-5 py-4">
         <CalendarRange className="h-4 w-4 text-brand-700" aria-hidden="true" />
-        <h2 className="text-sm font-extrabold tracking-tight text-ink-900">Your week</h2>
+        <h2 className="text-sm font-semibold tracking-tight text-ink-900">Your week</h2>
       </div>
 
       <div className="scrollbar-slim overflow-x-auto">
@@ -231,7 +231,7 @@ function WeekGrid({ blocks }) {
             return (
               <div key={day.value} className="min-h-40 p-3">
                 <p
-                  className={`mb-2.5 text-center text-[11px] font-bold uppercase tracking-wider ${
+                  className={`mb-2.5 text-center text-[11px] font-semibold uppercase tracking-wider ${
                     dayBlocks.length ? 'text-brand-700' : 'text-ink-300'
                   }`}
                 >
@@ -245,15 +245,15 @@ function WeekGrid({ blocks }) {
                     {dayBlocks.map((block) => (
                       <li
                         key={block.id}
-                        className="rounded-xl bg-gradient-to-br from-brand-600 to-brand-800 px-2.5 py-2 text-center text-white shadow-sm"
+                        className="rounded-lg bg-brand-700 px-2.5 py-2 text-center text-white shadow-sm"
                       >
-                        <p className="text-[11px] font-extrabold leading-tight">
+                        <p className="text-[11px] font-semibold leading-tight">
                           {formatClock(block.start_time)}
                         </p>
                         <p className="text-[10px] font-medium leading-tight text-brand-100/85">
                           to {formatClock(block.end_time)}
                         </p>
-                        <p className="mt-1 text-[10px] font-bold text-gold-200">
+                        <p className="mt-1 text-[10px] font-semibold text-gold-200">
                           {slotCount(block)} slots
                         </p>
                       </li>
@@ -271,18 +271,18 @@ function WeekGrid({ blocks }) {
 
 function BlockRow({ block, busy, onRemove }) {
   return (
-    <article className="flex flex-wrap items-center gap-4 rounded-2xl bg-white p-4 shadow-card ring-1 ring-ink-100 transition hover:ring-brand-200">
-      <div className="flex h-14 w-14 shrink-0 flex-col items-center justify-center rounded-xl bg-brand-50 leading-none">
-        <span className="text-[10px] font-bold uppercase tracking-wide text-brand-600">
+    <article className="flex flex-wrap items-center gap-4 rounded-xl bg-white p-4 border border-ink-200 transition-colors hover:border-ink-300">
+      <div className="flex h-14 w-14 shrink-0 flex-col items-center justify-center rounded-lg bg-brand-50 leading-none">
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-brand-600">
           Every
         </span>
-        <span className="mt-0.5 text-sm font-extrabold text-brand-800">
+        <span className="mt-0.5 text-sm font-semibold text-brand-800">
           {weekdayLabel(block.weekday).slice(0, 3)}
         </span>
       </div>
 
       <div className="min-w-0 flex-1">
-        <p className="font-extrabold tracking-tight text-ink-900">
+        <p className="font-bold tracking-tight text-ink-900">
           {formatClock(block.start_time)} - {formatClock(block.end_time)}
         </p>
         <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs font-medium text-ink-500">
@@ -307,7 +307,7 @@ function BlockRow({ block, busy, onRemove }) {
         onClick={onRemove}
         disabled={busy}
         aria-label={`Remove ${weekdayLabel(block.weekday)} ${formatClock(block.start_time)} hours`}
-        className="ml-auto rounded-xl p-2.5 text-ink-400 transition hover:bg-rose-50 hover:text-rose-600 disabled:opacity-50"
+        className="ml-auto rounded-lg p-2.5 text-ink-400 transition hover:bg-rose-50 hover:text-rose-600 disabled:opacity-50"
       >
         {busy ? (
           <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
@@ -378,13 +378,13 @@ function AddHoursForm({ token, onCancel, onAdded, onUnauthorized }) {
     <form
       onSubmit={handleSubmit}
       noValidate
-      className="animate-rise mb-6 rounded-2xl bg-white p-5 shadow-raised ring-1 ring-brand-100"
+      className="animate-rise mb-6 rounded-xl bg-white p-5 shadow-raised ring-1 ring-brand-100"
     >
       <div className="mb-4 flex items-center gap-2">
-        <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-brand-700 to-brand-900 text-white">
+        <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-700 text-white">
           <Clock className="h-4 w-4" aria-hidden="true" />
         </span>
-        <h2 className="text-base font-extrabold tracking-tight text-ink-900">
+        <h2 className="text-base font-bold tracking-tight text-ink-900">
           New consultation hours
         </h2>
       </div>
@@ -459,11 +459,11 @@ function AddHoursForm({ token, onCancel, onAdded, onUnauthorized }) {
         </Field>
       </div>
 
-      <div className="mt-4 rounded-xl bg-ink-50 px-4 py-3 text-sm">
+      <div className="mt-4 rounded-lg bg-ink-50 px-4 py-3 text-sm">
         {valid ? (
           <p className="font-semibold text-ink-700">
             Every {weekdayLabel(Number(form.weekday))} this publishes{' '}
-            <span className="font-extrabold text-brand-700">{preview} slots</span> of{' '}
+            <span className="font-bold text-brand-700">{preview} slots</span> of{' '}
             {form.slot_minutes} minutes, from {formatClock(form.start_time)} to{' '}
             {formatClock(form.end_time)}.
           </p>
@@ -479,7 +479,7 @@ function AddHoursForm({ token, onCancel, onAdded, onUnauthorized }) {
       {error ? (
         <p
           role="alert"
-          className="mt-4 flex items-start gap-2 rounded-xl border border-rose-100 bg-rose-50 px-3.5 py-3 text-sm font-medium text-rose-700"
+          className="mt-4 flex items-start gap-2 rounded-lg border border-rose-100 bg-rose-50 px-3.5 py-3 text-sm font-medium text-rose-700"
         >
           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
           {error}
@@ -490,14 +490,14 @@ function AddHoursForm({ token, onCancel, onAdded, onUnauthorized }) {
         <button
           type="button"
           onClick={onCancel}
-          className="rounded-xl border border-ink-200 px-4 py-2.5 text-sm font-bold text-ink-700 transition hover:bg-ink-50"
+          className="rounded-lg border border-ink-200 px-4 py-2.5 text-sm font-semibold text-ink-700 transition hover:bg-ink-50"
         >
           Cancel
         </button>
         <button
           type="submit"
           disabled={!valid || submitting}
-          className="flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-brand-700 to-brand-600 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-brand-900/20 transition hover:from-brand-800 hover:to-brand-700 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none"
+          className="flex items-center justify-center gap-2 rounded-lg bg-brand-700 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-brand-600 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none"
         >
           {submitting ? (
             <>
@@ -515,11 +515,11 @@ function AddHoursForm({ token, onCancel, onAdded, onUnauthorized }) {
 
 function EmptyHours({ onAdd, showButton }) {
   return (
-    <div className="rounded-2xl border border-dashed border-ink-300 bg-white px-6 py-14 text-center">
-      <span className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-brand-50">
+    <div className="rounded-xl border border-dashed border-ink-300 bg-white px-6 py-14 text-center">
+      <span className="mx-auto flex h-16 w-16 items-center justify-center rounded-xl bg-brand-50">
         <CalendarClock className="h-8 w-8 text-brand-600" aria-hidden="true" />
       </span>
-      <p className="mt-4 text-lg font-extrabold tracking-tight text-ink-900">
+      <p className="mt-4 text-lg font-bold tracking-tight text-ink-900">
         No consultation hours yet
       </p>
       <p className="mx-auto mt-1.5 max-w-md text-sm leading-relaxed text-ink-500">
@@ -530,7 +530,7 @@ function EmptyHours({ onAdd, showButton }) {
         <button
           type="button"
           onClick={onAdd}
-          className="mt-6 inline-flex items-center gap-2 rounded-xl bg-brand-700 px-5 py-3 text-sm font-bold text-white transition hover:bg-brand-800"
+          className="mt-6 inline-flex items-center gap-2 rounded-lg bg-brand-700 px-5 py-3 text-sm font-semibold text-white transition hover:bg-brand-800"
         >
           <Plus className="h-4 w-4" aria-hidden="true" />
           Publish your first block
@@ -541,14 +541,14 @@ function EmptyHours({ onAdd, showButton }) {
 }
 
 const inputClass =
-  'w-full rounded-xl border border-ink-200 bg-ink-50 px-3.5 py-2.5 text-sm font-medium text-ink-900 transition placeholder:text-ink-400 focus:border-brand-500 focus:bg-white focus:outline-none focus:ring-4 focus:ring-brand-500/10';
+  'w-full rounded-lg border border-ink-200 bg-white px-3.5 py-2.5 text-[14px] font-medium text-ink-900 transition placeholder:text-ink-400 hover:border-ink-300 focus:border-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-700/15';
 
 function Field({ id, label, optional = false, children }) {
   return (
     <div>
       <label
         htmlFor={id}
-        className="mb-1.5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-ink-600"
+        className="mb-1.5 flex items-center gap-1.5 text-[12px] font-medium text-ink-700"
       >
         {label}
         {optional ? <span className="font-medium normal-case text-ink-400">(optional)</span> : null}
