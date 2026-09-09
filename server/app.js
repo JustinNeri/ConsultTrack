@@ -30,6 +30,7 @@ const {
   // there just burns Postgres connections. Set PG_POOL_MAX=1 on Vercel.
   PG_POOL_MAX = 10,
   // Comma-separated addresses allowed to register despite not being HAU ones.
+  // An entry may name the role it should get: "you@gmail.com:adviser".
   // Leave empty in production.
   AUTH_EMAIL_ALLOWLIST = '',
 } = process.env;
@@ -83,11 +84,23 @@ const FACULTY_DOMAIN = 'hau.edu.ph';
 const HAU_DOMAINS = [STUDENT_DOMAIN, FACULTY_DOMAIN];
 const HAU_EMAIL_HINT = 'Use your HAU email address (@student.hau.edu.ph or @hau.edu.ph).';
 
-// Individual addresses that skip the domain check, for demos and testing.
-const EMAIL_ALLOWLIST = new Set(
+/*
+ * Individual addresses that skip the domain check, for demos and testing.
+ * Each entry is "address" or "address:role" -- the second form is how a
+ * non-HAU test address can be registered as an adviser, since it has no
+ * @hau.edu.ph domain to derive the role from.
+ *
+ *   AUTH_EMAIL_ALLOWLIST=you@gmail.com:adviser,panelist@gmail.com
+ */
+const EMAIL_ALLOWLIST = new Map(
   AUTH_EMAIL_ALLOWLIST.split(',')
     .map((entry) => entry.trim().toLowerCase())
-    .filter(Boolean),
+    .filter(Boolean)
+    .map((entry) => {
+      const [address, role] = entry.split(':');
+      return [address.trim(), role?.trim() === 'adviser' ? 'adviser' : 'student'];
+    })
+    .filter(([address]) => address),
 );
 
 // Loose on purpose - confirm HAU's real student-number format and tighten this.
@@ -179,11 +192,14 @@ async function sendAccessCode(email, { createUser }) {
 }
 
 /**
- * The account type a given HAU address gets. Allowlisted test addresses (which
- * are on no HAU domain at all) register as students.
+ * The account type a given address gets: faculty domain means adviser, and an
+ * allowlisted test address gets whatever role its entry names (student unless
+ * it says otherwise).
  */
 function roleForEmail(email) {
-  return String(email).toLowerCase().endsWith(`@${FACULTY_DOMAIN}`) ? 'adviser' : 'student';
+  const address = String(email).trim().toLowerCase();
+  if (EMAIL_ALLOWLIST.has(address)) return EMAIL_ALLOWLIST.get(address);
+  return address.endsWith(`@${FACULTY_DOMAIN}`) ? 'adviser' : 'student';
 }
 
 /**

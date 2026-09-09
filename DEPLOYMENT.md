@@ -120,8 +120,20 @@ comma-separated list:
 AUTH_EMAIL_ALLOWLIST=you@gmail.com,panelist@gmail.com
 ```
 
-Those addresses skip the domain check and nothing else. Leave the variable
-unset in production.
+Those addresses skip the domain check and nothing else — they register as
+students, since a Gmail address has no faculty domain to derive a role from.
+
+**Testing the adviser flow without a faculty address.** Add `:adviser` to an
+entry and that address registers as an adviser instead:
+
+```
+AUTH_EMAIL_ALLOWLIST=you@gmail.com:adviser,panelist@gmail.com
+```
+
+The address then goes through the normal three-step sign-up and gets the faculty
+form at step 3. Restart the API after changing the variable (on Vercel, redeploy)
+— it is read once at start-up. Leave the variable unset in production: an entry
+tagged `:adviser` grants an adviser account to whoever controls that inbox.
 
 ## A6. Test it end to end
 
