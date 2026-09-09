@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   ClipboardList,
   FileText,
+  Users,
   Loader2,
   Plus,
   Trash2,
@@ -49,6 +50,11 @@ export default function CompleteSessionModal({ token, consultationId, onClose, o
   const [loading, setLoading] = useState(true);
   const [minutes, setMinutes] = useState('');
   const [tasks, setTasks] = useState(() => [blankTask()]);
+  // Attendance is opt-in. Defaulting everyone to present would silently record
+  // an attestation the adviser never made -- "not recorded" and "all present"
+  // are different claims, and the record prints them differently.
+  const [takeAttendance, setTakeAttendance] = useState(false);
+  const [absent, setAbsent] = useState(() => new Set());
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
@@ -111,6 +117,16 @@ export default function CompleteSessionModal({ token, consultationId, onClose, o
               assignee_id: task.assignee_id || null,
               due_date: task.due_date || null,
             })),
+          // Omitted entirely when the adviser did not take attendance, so the
+          // record can say so rather than inventing a full house.
+          ...(takeAttendance
+            ? {
+                attendance: members.map((member) => ({
+                  profile_id: member.id,
+                  present: !absent.has(member.id),
+                })),
+              }
+            : {}),
         },
       });
       onCompleted(result);
@@ -188,6 +204,88 @@ export default function CompleteSessionModal({ token, consultationId, onClose, o
             className={`${inputClass} resize-none`}
           />
           <p className="mt-1 text-right text-xs text-ink-400">{minutes.length}/5000</p>
+
+          {/* ------------------------------------------------- attendance --- */}
+          <div className="mt-5 rounded-2xl bg-ink-50 p-4 ring-1 ring-ink-100">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-ink-600">
+                <Users className="h-3.5 w-3.5 text-ink-400" aria-hidden="true" />
+                Attendance
+                <span className="font-medium normal-case text-ink-400">(optional)</span>
+              </p>
+
+              <label className="flex cursor-pointer items-center gap-2 text-xs font-bold text-ink-700">
+                <input
+                  type="checkbox"
+                  checked={takeAttendance}
+                  onChange={(event) => setTakeAttendance(event.target.checked)}
+                  className="h-4 w-4 rounded border-ink-300 text-brand-700 focus:ring-brand-500/30"
+                />
+                Take attendance
+              </label>
+            </div>
+
+            {takeAttendance ? (
+              members.length === 0 ? (
+                <p className="mt-3 text-xs text-ink-500">
+                  Nobody in this group has set their thesis group on their profile yet, so there
+                  is no one to tick off.
+                </p>
+              ) : (
+                <>
+                  <ul className="mt-3 space-y-1.5">
+                    {members.map((member) => {
+                      const present = !absent.has(member.id);
+                      return (
+                        <li key={member.id}>
+                          <label className="flex cursor-pointer items-center gap-2.5 rounded-xl bg-white px-3 py-2.5 ring-1 ring-ink-200 transition hover:ring-brand-200">
+                            <input
+                              type="checkbox"
+                              checked={present}
+                              onChange={() =>
+                                setAbsent((prev) => {
+                                  const next = new Set(prev);
+                                  if (next.has(member.id)) next.delete(member.id);
+                                  else next.add(member.id);
+                                  return next;
+                                })
+                              }
+                              className="h-4 w-4 rounded border-ink-300 text-brand-700 focus:ring-brand-500/30"
+                            />
+                            <span
+                              className={`flex-1 truncate text-sm font-semibold ${
+                                present ? 'text-ink-800' : 'text-ink-400 line-through'
+                              }`}
+                            >
+                              {member.full_name || member.email}
+                            </span>
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
+                                present
+                                  ? 'bg-emerald-50 text-emerald-700'
+                                  : 'bg-rose-50 text-rose-600'
+                              }`}
+                            >
+                              {present ? 'Present' : 'Absent'}
+                            </span>
+                          </label>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                  <p className="mt-2 text-xs text-ink-500">
+                    Untick anyone who did not attend. This prints on the group&apos;s
+                    consultation record.
+                  </p>
+                </>
+              )
+            ) : (
+              <p className="mt-2 text-xs text-ink-500">
+                Leave this off and the record will show attendance was not taken for this
+                session.
+              </p>
+            )}
+          </div>
 
           {/* ---------------------------------------------------- the tasks -- */}
           <div className="mt-5">

@@ -1309,6 +1309,133 @@ app.get(
   }),
 );
 
+/* ------------------------------------------------ the consultation record - */
+
+/*
+ * The record is the paper logbook a group brings to their defense: every
+ * session they held, what was agreed, who was there and what it left them to
+ * do. Everything it prints was already in the database -- until now nothing
+ * could get it out of the screen.
+ *
+ * There is no "record signed" flag. A completed consultation is already the
+ * adviser's attestation: they wrote the minutes and marked it done, so each
+ * session cites its own `completed_at` and the sheet leaves a signature line
+ * for the wet signature these forms get anyway.
+ */
+
+/**
+ * GET /api/groups
+ *
+ * The groups the caller can pull a record for: for an adviser, every group they
+ * have advised; for a student, their own. Ordered by most recent session, which
+ * is the one an adviser is most likely to want.
+ */
+app.get(
+  '/api/groups',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const { id, role, group_name: groupName } = req.profile;
+
+    const { rows } = await pool.query(
+      `select c.group_name,
+              count(*)::int                                              as total,
+              count(*) filter (where c.status = 'completed')::int        as completed,
+              max(c.meeting_date)                                        as last_session
+         from public.consultations c
+        where c.group_name is not null
+          and (
+                ($2 = 'adviser' and c.adviser_id = $1)
+             or ($2 <> 'adviser' and (c.group_name = $3 or c.created_by = $1))
+          )
+        group by c.group_name
+        order by max(c.meeting_date) desc`,
+      [id, role, groupName],
+    );
+
+    res.json({ groups: rows });
+  }),
+);
+
+/**
+ * GET /api/record?group=Group%207
+ *
+ * Every session that group has already held, in order, with its minutes,
+ * attendance and action items. Access is the same predicate as everywhere else,
+ * so an adviser gets the sessions they advised and a student their own group's;
+ * a group the caller has no claim on simply comes back empty and 404s.
+ */
+app.get(
+  '/api/record',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const group = String(req.query.group ?? '').trim();
+    if (!group) throw new HttpError(400, 'Name the group whose record you want.');
+
+    const { id, role, group_name: groupName } = req.profile;
+
+    const { rows } = await pool.query(
+      `select c.id, c.topic, c.location, c.meeting_date, c.status,
+              c.minutes, c.completed_at,
+              p.full_name       as adviser_name,
+              p.faculty_position as adviser_position,
+              p.email           as adviser_email,
+              coalesce((
+                select json_agg(json_build_object(
+                         'name', pr.full_name,
+                         'student_id', pr.student_id,
+                         'present', at.present
+                       ) order by pr.full_name)
+                  from public.consultation_attendance at
+                  join public.profiles pr on pr.id = at.profile_id
+                 where at.consultation_id = c.id
+              ), '[]'::json) as attendance,
+              coalesce((
+                select json_agg(json_build_object(
+                         'description', a.task_description,
+                         'status', a.status,
+                         'assignee', asg.full_name,
+                         'due_date', to_char(a.due_date, 'YYYY-MM-DD')
+                       ) order by a.created_at)
+                  from public.action_items a
+                  left join public.profiles asg on asg.id = a.assignee_id
+                 where a.consultation_id = c.id
+              ), '[]'::json) as action_items
+         from public.consultations c
+         left join public.profiles p on p.id = c.adviser_id
+        where c.group_name = $4
+          and c.status in ('scheduled', 'completed')
+          and (c.completed_at is not null or c.meeting_date < now())
+          and (
+                ($2 = 'adviser' and c.adviser_id = $1)
+             or ($2 <> 'adviser' and (c.group_name = $3 or c.created_by = $1))
+          )
+        order by c.meeting_date asc`,
+      [id, role, groupName, group],
+    );
+
+    if (!rows.length) {
+      throw new HttpError(404, 'No sessions on record for that group yet.');
+    }
+
+    // The heading needs the group's own details, which live on the students
+    // rather than on the consultation.
+    const { rows: members } = await pool.query(
+      `select full_name, student_id, course, year_level
+         from public.profiles
+        where role = 'student' and group_name = $1
+        order by full_name asc`,
+      [group],
+    );
+
+    res.json({
+      group,
+      members,
+      sessions: rows,
+      generated_at: new Date().toISOString(),
+    });
+  }),
+);
+
 /**
  * GET /api/consultations/:id
  *
@@ -1367,6 +1494,7 @@ app.post(
 
     const minutes = String(req.body?.minutes ?? '').trim().slice(0, 5000) || null;
     const tasks = normalizeTasks(req.body?.tasks);
+    const attendance = normalizeAttendance(req.body?.attendance);
 
     const client = await pool.connect();
     try {
@@ -1395,8 +1523,22 @@ app.post(
         created.push(item[0]);
       }
 
+      // Attendance is part of the same attestation as the minutes, so it is
+      // part of the same transaction. Re-running a wrap-up would overwrite
+      // rather than duplicate.
+      for (const entry of attendance) {
+        await client.query(
+          `insert into public.consultation_attendance
+                  (consultation_id, profile_id, present)
+                values ($1, $2, $3)
+           on conflict (consultation_id, profile_id) do update
+                  set present = excluded.present, recorded_at = now()`,
+          [consultation.id, entry.profileId, entry.present],
+        );
+      }
+
       await client.query('commit');
-      res.json({ consultation: rows[0], tasks: created });
+      res.json({ consultation: rows[0], tasks: created, attendance: attendance.length });
     } catch (err) {
       await client.query('rollback');
       throw err;
@@ -1473,6 +1615,25 @@ function normalizeTasks(input) {
     })
     .filter(Boolean)
     .slice(0, 20);
+}
+
+/**
+ * Validates the attendance rows from a wrap-up. Only an explicit true/false is
+ * kept: a member the adviser never ticked either way gets no row, which is how
+ * "not recorded" stays distinct from "absent".
+ */
+function normalizeAttendance(input) {
+  if (!Array.isArray(input)) return [];
+
+  return input
+    .map((entry) => {
+      const profileId = entry?.profile_id ? String(entry.profile_id) : null;
+      if (!profileId || !UUID_RE.test(profileId)) return null;
+      if (typeof entry.present !== 'boolean') return null;
+      return { profileId, present: entry.present };
+    })
+    .filter(Boolean)
+    .slice(0, 50);
 }
 
 /**

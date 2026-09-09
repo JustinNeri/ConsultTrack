@@ -20,6 +20,7 @@ client/                    Vite + React app
   src/components/ConsultationThread.jsx    per-consultation chat
   src/components/CompleteSessionModal.jsx  minutes + action items
   src/components/HistoryView.jsx           sessions already held
+  src/components/RecordView.jsx            the printable consultation record
   src/lib/api.js           fetch wrapper
   src/lib/session.js       localStorage session
   src/lib/schedule.js      weekday / slot helpers
@@ -29,6 +30,7 @@ supabase/migrations/
   ...
   0006_adviser_availability.sql        consultation hours
   0007_messages_and_session_wrapup.sql threads, minutes, action items
+  0008_attendance.sql                  who was in the room
 ```
 
 ## 1. Database
@@ -132,7 +134,9 @@ development and no CORS round trip is needed.
 | GET | `/api/consultations/:id/messages` | Bearer | The thread (also marks it read) |
 | POST | `/api/consultations/:id/messages` | Bearer | Send a message |
 | GET | `/api/messages/unread` | Bearer | Unread totals for the badges |
-| POST | `/api/consultations/:id/complete` | Bearer | Wrap up: minutes + action items |
+| POST | `/api/consultations/:id/complete` | Bearer | Wrap up: minutes, attendance, action items |
+| GET | `/api/groups` | Bearer | Groups you can pull a record for |
+| GET | `/api/record?group=` | Bearer | The full consultation record |
 | POST | `/api/consultations/:id/tasks` | Bearer | Raise one more action item |
 | PATCH | `/api/tasks/:id` | Bearer | Resolve / reopen a task |
 | GET | `/api/health` | — | Liveness + DB check |
@@ -250,6 +254,48 @@ it down — surfacing it is how it gets finished.
 Action items also gained a real `due_date`. The task card used to show the date
 of the session an item came *from* in the slot where a deadline belongs; it now
 shows the deadline when there is one, in red once it is past.
+
+### The consultation record
+
+Every capstone program asks a group to hand in a signed log of the consultations
+they held. Everything on that form was already in this database — dates, topics,
+minutes, action items, and now attendance — and nothing could get it out of the
+screen. **Consultation record** is that way out: a printable sheet listing every
+session the group has held, in order, with what was agreed, who attended and what
+each session left them to do.
+
+Printing is the browser's own print-to-PDF. The sheet is already HTML, a print
+stylesheet strips the app shell around it, and a PDF library rendering the same
+thing a second way is a second thing to keep in sync. The shell is a fixed-height
+flex box with its own scrolling panes, which a printer resolves as "page one and
+nothing else", so `@media print` in `index.css` unpicks the height, the overflow
+and the chrome, and keeps a session from splitting across a page break.
+
+A student's record is their own group's. An adviser picks from the groups they
+advise (`GET /api/groups`) and sees the sessions they advised — the same access
+predicate as everywhere else, so a group you have no claim on simply 404s.
+
+There is deliberately **no "record signed" flag**. A completed consultation is
+already the adviser's attestation: they wrote the minutes and marked it done. The
+sheet cites each session's own `completed_at` and leaves a signature line for the
+wet signature these forms get anyway.
+
+### Attendance
+
+Recorded by the adviser during the wrap-up, since that is the only moment anyone
+knows the answer. It is **opt-in**: there is a "take attendance" toggle, off by
+default, because defaulting everyone to present would record an attestation the
+adviser never made. That gives the record three genuinely different states, and
+it prints all three differently:
+
+| Stored | Printed |
+| --- | --- |
+| No rows | *not recorded* |
+| `present = true` | listed under Present |
+| `present = false` | listed under absent |
+
+Re-running a wrap-up overwrites attendance rather than duplicating it — the
+primary key is the (consultation, person) pair.
 
 ## Known placeholders
 

@@ -10,6 +10,7 @@ import {
   Check,
   CheckCircle2,
   ChevronRight,
+  FileText,
   Circle,
   Clock,
   GraduationCap,
@@ -39,6 +40,7 @@ import AvailabilityView from './AvailabilityView.jsx';
 import ConsultationThread from './ConsultationThread.jsx';
 import CompleteSessionModal from './CompleteSessionModal.jsx';
 import HistoryView from './HistoryView.jsx';
+import RecordView from './RecordView.jsx';
 import { api } from '../lib/api.js';
 
 /**
@@ -68,6 +70,9 @@ function navItems(isAdviser) {
     // Where a session goes once it has happened, and where an adviser finishes
     // wrapping one up.
     { key: 'history', label: 'Past sessions', icon: History },
+    // The printable log a group hands in. Everything on it is already in the
+    // database; this is the only way it gets out.
+    { key: 'record', label: 'Consultation record', icon: FileText },
     { key: 'profile', label: 'My profile', icon: UserRound },
   ];
 }
@@ -274,7 +279,7 @@ export default function Dashboard({ session, onSignOut }) {
 
   return (
     <div className="min-h-screen bg-canvas lg:p-4">
-      <div className="mx-auto flex min-h-screen w-full max-w-[1600px] overflow-hidden bg-white lg:min-h-[calc(100vh-2rem)] lg:rounded-3xl lg:shadow-lift lg:ring-1 lg:ring-ink-900/5">
+      <div className="app-shell mx-auto flex min-h-screen w-full max-w-[1600px] overflow-hidden bg-white lg:min-h-[calc(100vh-2rem)] lg:rounded-3xl lg:shadow-lift lg:ring-1 lg:ring-ink-900/5">
         <Sidebar
           view={view}
           isAdviser={isAdviser}
@@ -310,7 +315,7 @@ export default function Dashboard({ session, onSignOut }) {
             }}
           />
 
-          <main className="scrollbar-slim flex-1 overflow-y-auto bg-ink-50/70 px-4 py-6 sm:px-7 sm:py-8">
+          <main className="app-main scrollbar-slim flex-1 overflow-y-auto bg-ink-50/70 px-4 py-6 sm:px-7 sm:py-8">
             {error ? (
               <div
                 role="alert"
@@ -416,6 +421,10 @@ export default function Dashboard({ session, onSignOut }) {
               />
             ) : null}
 
+            {view === 'record' ? (
+              <RecordView token={token} isAdviser={isAdviser} profile={profile} />
+            ) : null}
+
             {view === 'profile' ? <ProfileView profile={profile} onSignOut={onSignOut} /> : null}
           </main>
         </div>
@@ -491,7 +500,7 @@ function Sidebar({ view, isAdviser, requestCount, onNavigate, onSignOut, onBook,
       ) : null}
 
       <aside
-        className={`fixed inset-y-0 left-0 z-50 flex w-72 flex-col overflow-hidden bg-gradient-to-b from-brand-800 via-brand-900 to-brand-950 p-5 transition-transform duration-300 lg:static lg:z-auto lg:w-64 lg:translate-x-0 ${
+        className={`no-print fixed inset-y-0 left-0 z-50 flex w-72 flex-col overflow-hidden bg-gradient-to-b from-brand-800 via-brand-900 to-brand-950 p-5 transition-transform duration-300 lg:static lg:z-auto lg:w-64 lg:translate-x-0 ${
           open ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
@@ -629,7 +638,7 @@ function TopBar({
     .join(' - ');
 
   return (
-    <header className="sticky top-0 z-30 flex items-center gap-3 border-b border-ink-100 bg-white/85 px-4 py-3.5 backdrop-blur-xl sm:px-7">
+    <header className="no-print sticky top-0 z-30 flex items-center gap-3 border-b border-ink-100 bg-white/85 px-4 py-3.5 backdrop-blur-xl sm:px-7">
       <button
         type="button"
         onClick={onOpenNav}

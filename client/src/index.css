@@ -190,3 +190,74 @@ body {
     transform: none;
   }
 }
+
+/* -------------------------------------------------------------- printing -- */
+
+/*
+ * The consultation record is a document that happens to live inside an app
+ * shell. The shell is a fixed-height flex box with its own scrolling panes,
+ * which a printer resolves as "page one and nothing else", so printing has to
+ * unpick all three: height, overflow, and the chrome around the sheet.
+ */
+@media print {
+  @page {
+    margin: 14mm;
+  }
+
+  html,
+  body,
+  #root {
+    height: auto !important;
+    overflow: visible !important;
+    background: #fff !important;
+  }
+
+  body {
+    background-image: none !important;
+  }
+
+  /* App chrome: sidebar, header, buttons, empty states. */
+  .no-print {
+    display: none !important;
+  }
+
+  .app-shell {
+    display: block !important;
+    min-height: 0 !important;
+    max-width: none !important;
+    overflow: visible !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    --tw-ring-shadow: 0 0 #0000 !important;
+  }
+
+  .app-main {
+    height: auto !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    background: #fff !important;
+  }
+
+  /* The sheet itself is the page, so it sheds its card styling. */
+  .print-sheet {
+    padding: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    --tw-ring-shadow: 0 0 #0000 !important;
+  }
+
+  /* A session split across a page break is unreadable as a record. */
+  .print-session {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  /* Entrance animations must not leave anything mid-fade on paper. */
+  .animate-rise,
+  .animate-float,
+  .animate-ping-badge {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}
